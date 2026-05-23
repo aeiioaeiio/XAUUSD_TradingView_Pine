@@ -1,0 +1,390 @@
+//@version=5
+indicator("XAUUSD Strategy V4.7 - Smart Auto Entry", overlay=true)
+
+// ═══════════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════════
+
+// Stoch
+stoch_period = input.int(5, "Stoch Period")
+stoch_k      = input.int(3, "Stoch K")
+stoch_d      = input.int(3, "Stoch D")
+oversold     = input.int(20, "Oversold")
+overbought   = input.int(80, "Overbought")
+
+// RSI
+rsi_period = input.int(14, "RSI")
+
+// EMA
+ema_fast  = input.int(20, "EMA Fast")
+ema_mid   = input.int(50, "EMA Mid")
+ema_trend = input.int(200, "EMA Trend")
+
+// ATR
+atr_len = input.int(14, "ATR Length")
+atr_mult_sl = input.float(1.5, "ATR SL Multiplier")
+atr_mult_tp = input.float(2.0, "ATR TP Multiplier")
+
+// Filters
+use_no_trade_filter = input.bool(true, "Enable No Trade Zone")
+avoid_extreme_wick  = input.bool(true, "Avoid Extreme Wick")
+
+// ═══════════════════════════════════════
+// INDICATORS
+// ═══════════════════════════════════════
+
+ema20  = ta.ema(close, ema_fast)
+ema50  = ta.ema(close, ema_mid)
+ema200 = ta.ema(close, ema_trend)
+
+plot(ema20, color=color.yellow, linewidth=2)
+plot(ema50, color=color.orange, linewidth=2)
+plot(ema200, color=color.white, linewidth=3)
+
+rsi = ta.rsi(close, rsi_period)
+
+stoch_k_raw = ta.stoch(close, high, low, stoch_period)
+k = ta.sma(stoch_k_raw, stoch_k)
+d = ta.sma(k, stoch_d)
+
+atr = ta.atr(atr_len)
+atr_avg = ta.sma(atr, 20)
+
+// ═══════════════════════════════════════
+// TREND
+// ═══════════════════════════════════════
+
+bull_trend = close > ema200
+bear_trend = close < ema200
+
+trend_text =
+     bull_trend ? "BULL" :
+     bear_trend ? "BEAR" : "SIDE"
+
+// ═══════════════════════════════════════
+// STOCH SIGNAL
+// ═══════════════════════════════════════
+
+hook_up =
+     k < oversold and
+     ta.crossover(k, d)
+
+hook_down =
+     k > overbought and
+     ta.crossunder(k, d)
+
+// ═══════════════════════════════════════
+// CANDLE
+// ═══════════════════════════════════════
+
+body = math.abs(close - open)
+upper_wick = high - math.max(close, open)
+lower_wick = math.min(close, open) - low
+
+hammer =
+     lower_wick > body * 2 and
+     close > open
+
+shooting_star =
+     upper_wick > body * 2 and
+     close < open
+
+bull_engulf =
+     close > open and
+     open <= close[1] and
+     close >= open[1]
+
+bear_engulf =
+     close < open and
+     open >= close[1] and
+     close <= open[1]
+
+bull_reversal =
+     hammer or bull_engulf
+
+bear_reversal =
+     shooting_star or bear_engulf
+
+// ═══════════════════════════════════════
+// VOLUME
+// ═══════════════════════════════════════
+
+vol_ma = ta.sma(volume, 20)
+
+vol_spike =
+     volume > vol_ma * 1.5
+
+rising_vol =
+     volume > volume[1]
+
+// ═══════════════════════════════════════
+// LIQUIDITY SWEEP
+// ═══════════════════════════════════════
+
+liq_sweep_buy =
+     low < low[1] and
+     close > low[1]
+
+liq_sweep_sell =
+     high > high[1] and
+     close < high[1]
+
+// ═══════════════════════════════════════
+// STRUCTURE
+// ═══════════════════════════════════════
+
+break_up =
+     high > high[1] and
+     close > close[1]
+
+break_down =
+     low < low[1] and
+     close < close[1]
+
+// ═══════════════════════════════════════
+// FIB LEVELS
+// ═══════════════════════════════════════
+
+swing_high = ta.highest(high, 50)
+swing_low  = ta.lowest(low, 50)
+
+fib_618 = swing_low + (swing_high - swing_low) * 0.618
+fib_786 = swing_low + (swing_high - swing_low) * 0.786
+
+plot(fib_618, color=color.orange)
+plot(fib_786, color=color.red)
+
+// ═══════════════════════════════════════
+// SR/FIB CONTEXT
+// ═══════════════════════════════════════
+
+pb_buy =
+     close >= fib_618 and
+     close <= fib_786
+
+pb_sell =
+     close <= fib_618 and
+     close >= fib_786
+
+middle_range =
+     not pb_buy and
+     not pb_sell
+
+// ═══════════════════════════════════════
+// NO TRADE FILTER
+// ═══════════════════════════════════════
+
+ema_flat =
+     math.abs(ema20 - ema20[5]) < atr * 0.2
+
+low_atr =
+     atr < atr_avg * 0.8
+
+choppy_market =
+     ema_flat and low_atr
+
+extreme_upper_wick =
+     upper_wick > body * 3
+
+extreme_lower_wick =
+     lower_wick > body * 3
+
+wick_risk_buy =
+     avoid_extreme_wick and
+     extreme_lower_wick and
+     close < open
+
+wick_risk_sell =
+     avoid_extreme_wick and
+     extreme_upper_wick and
+     close > open
+
+no_trade_zone =
+     use_no_trade_filter and
+     (choppy_market or middle_range)
+
+// ═══════════════════════════════════════
+// SIGNAL SCORE
+// ═══════════════════════════════════════
+
+buy_score = 0
+sell_score = 0
+
+buy_score += bull_trend ? 1 : 0
+buy_score += hook_up ? 1 : 0
+buy_score += bull_reversal ? 1 : 0
+buy_score += liq_sweep_buy ? 1 : 0
+buy_score += break_up ? 1 : 0
+buy_score += pb_buy ? 1 : 0
+
+sell_score += bear_trend ? 1 : 0
+sell_score += hook_down ? 1 : 0
+sell_score += bear_reversal ? 1 : 0
+sell_score += liq_sweep_sell ? 1 : 0
+sell_score += break_down ? 1 : 0
+sell_score += pb_sell ? 1 : 0
+
+// ═══════════════════════════════════════
+// SIGNAL CLASSIFICATION
+// ═══════════════════════════════════════
+
+buy_ready =
+     buy_score >= 4 and
+     not no_trade_zone and
+     not wick_risk_buy
+
+sell_ready =
+     sell_score >= 4 and
+     not no_trade_zone and
+     not wick_risk_sell
+
+strong_buy =
+     buy_score >= 5
+
+strong_sell =
+     sell_score >= 5
+
+signal_text =
+     strong_buy ? "STRONG BUY" :
+     strong_sell ? "STRONG SELL" :
+     buy_ready ? "READY BUY" :
+     sell_ready ? "READY SELL" :
+     "WAIT"
+
+// ═══════════════════════════════════════
+// ENTRY / SL / TP
+// ═══════════════════════════════════════
+
+buy_entry = close
+sell_entry = close
+
+buy_sl =
+     low - (atr * atr_mult_sl)
+
+sell_sl =
+     high + (atr * atr_mult_sl)
+
+buy_tp =
+     buy_entry + (atr * atr_mult_tp)
+
+sell_tp =
+     sell_entry - (atr * atr_mult_tp)
+
+// RR
+risk_buy = buy_entry - buy_sl
+reward_buy = buy_tp - buy_entry
+
+risk_sell = sell_sl - sell_entry
+reward_sell = sell_entry - sell_tp
+
+buy_rr =
+     risk_buy > 0 ? reward_buy / risk_buy : 0
+
+sell_rr =
+     risk_sell > 0 ? reward_sell / risk_sell : 0
+
+// ═══════════════════════════════════════
+// PLOTS
+// ═══════════════════════════════════════
+
+plotshape(
+     strong_buy,
+     title="BUY",
+     style=shape.labelup,
+     color=color.green,
+     text="BUY",
+     location=location.belowbar)
+
+plotshape(
+     strong_sell,
+     title="SELL",
+     style=shape.labeldown,
+     color=color.red,
+     text="SELL",
+     location=location.abovebar)
+
+// ═══════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════
+
+var table dash = table.new(position.top_right, 2, 15)
+
+if barstate.islast
+
+    table.cell(dash, 0, 0, "Layer", bgcolor=color.rgb(50,30,140), text_color=color.white)
+    table.cell(dash, 1, 0, "Status", bgcolor=color.rgb(50,30,140), text_color=color.white)
+
+    table.cell(dash, 0, 1, "L1 Trend")
+    table.cell(dash, 1, 1, trend_text)
+
+    table.cell(dash, 0, 2, "L2 H1 Stoch")
+    table.cell(dash, 1, 2,
+         hook_up ? "Hook Up" :
+         hook_down ? "Hook Down" : "WAIT")
+
+    table.cell(dash, 0, 3, "L3 Candle")
+    table.cell(dash, 1, 3,
+         bull_reversal ? "Bull Rev" :
+         bear_reversal ? "Bear Rev" : "-")
+
+    table.cell(dash, 0, 4, "L4 Volume")
+    table.cell(dash, 1, 4,
+         vol_spike ? "Spike" :
+         rising_vol ? "Rising" : "Normal")
+
+    table.cell(dash, 0, 5, "L5 EMA")
+    table.cell(dash, 1, 5,
+         close > ema20 ? "Above" : "Below")
+
+    table.cell(dash, 0, 6, "L6 Structure")
+    table.cell(dash, 1, 6,
+         break_up ? "Break↑" :
+         break_down ? "Break↓" : "-")
+
+    table.cell(dash, 0, 7, "L7 SR/Fib")
+    table.cell(dash, 1, 7,
+         pb_buy ? "PB Buy" :
+         pb_sell ? "PB Sell" : "Middle")
+
+    table.cell(dash, 0, 8, "BUY Score")
+    table.cell(dash, 1, 8, str.tostring(buy_score) + "/6")
+
+    table.cell(dash, 0, 9, "SELL Score")
+    table.cell(dash, 1, 9, str.tostring(sell_score) + "/6")
+
+    table.cell(dash, 0, 10, "SL")
+    table.cell(dash, 1, 10,
+         strong_buy ? str.tostring(buy_sl) :
+         strong_sell ? str.tostring(sell_sl) : "-")
+
+    table.cell(dash, 0, 11, "TP")
+    table.cell(dash, 1, 11,
+         strong_buy ? str.tostring(buy_tp) :
+         strong_sell ? str.tostring(sell_tp) : "-")
+
+    table.cell(dash, 0, 12, "RR")
+    table.cell(dash, 1, 12,
+         strong_buy ? str.tostring(buy_rr, "#.##") :
+         strong_sell ? str.tostring(sell_rr, "#.##") : "-")
+
+    table.cell(dash, 0, 13, "Signal",
+         bgcolor=color.rgb(60,30,150),
+         text_color=color.white)
+
+    table.cell(dash, 1, 13, signal_text,
+         bgcolor=color.rgb(60,30,150),
+         text_color=color.yellow)
+
+// ═══════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════
+
+alertcondition(
+     strong_buy,
+     title="STRONG BUY",
+     message="XAUUSD STRONG BUY")
+
+alertcondition(
+     strong_sell,
+     title="STRONG SELL",
+     message="XAUUSD STRONG SELL")
