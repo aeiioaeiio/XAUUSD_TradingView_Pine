@@ -1,0 +1,762 @@
+//@version=5
+indicator("XAUUSD Strategy V4.7 - Auto Entry + Smart TP/SL", overlay=true, max_lines_count=500)
+
+// ═══════════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════════
+// Stoch
+stoch_period  = input.int(5,  "Stoch Period",   group="Stoch")
+stoch_k       = input.int(3,  "Stoch K",        group="Stoch")
+stoch_d       = input.int(3,  "Stoch D",        group="Stoch")
+oversold      = input.int(20, "Oversold",       group="Stoch")
+overbought    = input.int(80, "Overbought",     group="Stoch")
+
+// RSI
+rsi_period    = input.int(14, "RSI Period",     group="RSI")
+
+// EMA
+ema_fast      = input.int(20,  "EMA Fast",      group="EMA")
+ema_slow      = input.int(50,  "EMA Slow",      group="EMA")
+ema_trend     = input.int(200, "EMA Trend",     group="EMA")
+
+// Fibonacci
+fib_lookback  = input.int(50,     "Fib Lookback",    group="Fibonacci", minval=20)
+fib_tol       = input.float(0.008,"Fib Tolerance",   group="Fibonacci", step=0.001)
+
+// Auto SR
+sr_lookback   = input.int(20,  "SR Pivot Lookback",  group="Auto SR", minval=5)
+sr_touch_min  = input.int(2,   "Min SR Touches",     group="Auto SR", minval=1)
+sr_zone_width = input.float(3.0,"SR Zone Width (pip)",group="Auto SR", step=0.5)
+show_sr_label = input.bool(true,"Show SR Labels",     group="Auto SR")
+
+// Wick Reclaim / Stop Hunt
+wick_reclaim_min = input.float(0.45, "Min Wick Reclaim %", group="Wick Reclaim", step=0.05)
+sweep_score_weight = input.int(2, "Sweep+Reclaim Score", group="Wick Reclaim", minval=1, maxval=4)
+show_ready_signal = input.bool(true, "Show READY Signal", group="Signal Display")
+
+// Trend Continuation / EMA Pullback
+cont_body_max = input.float(0.85, "Continuation Max Body x Avg", group="Continuation", step=0.05)
+cont_score_weight = input.int(2, "Continuation Score", group="Continuation", minval=1, maxval=4)
+require_ema_hold = input.bool(true, "Require EMA20 Hold", group="Continuation")
+
+// Volume
+vol_length    = input.int(20,    "Volume MA Length", group="Volume")
+vol_mult      = input.float(1.5, "Volume Spike x",   group="Volume", step=0.1)
+
+// Scoring
+score_full    = input.int(5, "Full Signal Score",   group="Scoring", minval=3, maxval=10)
+score_early   = input.int(4, "Early Signal Score",  group="Scoring", minval=2, maxval=9)
+
+// Risk
+rr_ratio      = input.float(1.5, "R:R Ratio",          group="Risk", step=0.1)
+sl_buf        = input.int(5,     "SL Buffer pip",       group="Risk")
+sl_lookback   = input.int(5,     "SL Swing Lookback",   group="Risk", minval=2, maxval=20)
+min_rr        = input.float(1.2, "Minimum RR",          group="Risk", step=0.1)
+atr_period    = input.int(14,    "ATR Period",          group="Risk")
+atr_sl_mult   = input.float(0.3, "ATR SL Buffer",       group="Risk", step=0.1)
+use_atr_sl    = input.bool(true, "Use ATR Dynamic SL",  group="Risk")
+
+// No Trade / Chop Filter
+use_no_trade_filter = input.bool(true, "Use No Trade Filter", group="No Trade Filter")
+atr_flat_mult       = input.float(0.75, "Low ATR Filter x", group="No Trade Filter", step=0.05)
+ema_flat_len        = input.int(5, "EMA Flat Lookback", group="No Trade Filter", minval=2)
+ema_flat_tol_atr    = input.float(0.15, "EMA Flat Tolerance ATR", group="No Trade Filter", step=0.05)
+avoid_extreme_wick  = input.bool(true, "Avoid Extreme Wick Entry", group="No Trade Filter")
+extreme_wick_ratio  = input.float(0.65, "Extreme Wick %", group="No Trade Filter", step=0.05)
+
+// Entry / Execution
+entry_buffer_atr = input.float(0.10, "Entry Buffer ATR", group="Execution", step=0.05)
+tp1_rr           = input.float(1.0, "TP1 RR", group="Execution", step=0.1)
+tp2_rr           = input.float(1.5, "TP2 RR", group="Execution", step=0.1)
+show_entry_lines = input.bool(true, "Show Entry/SL/TP Lines", group="Execution")
+
+use_confirmed_h4 = input.bool(true, "Use Closed H4 Candle", group="MTF Filter")
+
+// ═══════════════════════════════════════
+// BASE CALCULATIONS
+// ═══════════════════════════════════════
+pip = syminfo.mintick * 10
+
+// H1 Stoch
+h1_k   = ta.sma(ta.stoch(close, high, low, stoch_period), stoch_k)
+h1_d   = ta.sma(h1_k, stoch_d)
+h1_rsi = ta.rsi(close, rsi_period)
+
+// EMA
+ema20  = ta.ema(close, ema_fast)
+ema50  = ta.ema(close, ema_slow)
+ema200 = ta.ema(close, ema_trend)
+
+// ATR / Volatility
+atr = ta.atr(atr_period)
+atr_avg = ta.sma(atr, 20)
+
+// H4 (Closed candle to reduce repaint)
+h4_k = request.security(syminfo.tickerid, "240",
+     ta.sma(ta.stoch(close, high, low, stoch_period), stoch_k)[1],
+     barmerge.gaps_off, barmerge.lookahead_off)
+h4_d = request.security(syminfo.tickerid, "240",
+     ta.sma(ta.sma(ta.stoch(close, high, low, stoch_period), stoch_k), stoch_d)[1],
+     barmerge.gaps_off, barmerge.lookahead_off)
+h4_rsi = request.security(syminfo.tickerid, "240",
+     ta.rsi(close, rsi_period)[1],
+     barmerge.gaps_off, barmerge.lookahead_off)
+h4_k_prev = request.security(syminfo.tickerid, "240",
+     ta.sma(ta.stoch(close, high, low, stoch_period), stoch_k)[2],
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+// ═══════════════════════════════════════
+// AUTO SR DETECTION
+// ═══════════════════════════════════════
+// หา Pivot High/Low อัตโนมัติ
+ph = ta.pivothigh(high, sr_lookback, sr_lookback)
+pl = ta.pivotlow(low,  sr_lookback, sr_lookback)
+sr_width = sr_zone_width * pip
+
+// เก็บ Pivot levels ล่าสุด 5 จุด
+var float[] resist_levels = array.new_float(0)
+var float[] support_levels = array.new_float(0)
+
+if not na(ph)
+    array.unshift(resist_levels, ph)
+    if array.size(resist_levels) > 5
+        array.pop(resist_levels)
+
+if not na(pl)
+    array.unshift(support_levels, pl)
+    if array.size(support_levels) > 5
+        array.pop(support_levels)
+
+// ตรวจสอบว่าราคาอยู่ใกล้ SR อัตโนมัติ
+auto_near_resist = false
+auto_near_support = false
+nearest_resist = float(na)
+nearest_support = float(na)
+
+if array.size(resist_levels) > 0
+    for i = 0 to array.size(resist_levels) - 1
+        lvl = array.get(resist_levels, i)
+        if math.abs(close - lvl) < sr_width
+            auto_near_resist := true
+            nearest_resist := lvl
+
+if array.size(support_levels) > 0
+    for i = 0 to array.size(support_levels) - 1
+        lvl = array.get(support_levels, i)
+        if math.abs(close - lvl) < sr_width
+            auto_near_support := true
+            nearest_support := lvl
+
+// Plot Auto SR Lines
+var line resist_line1 = na
+var line resist_line2 = na
+var line resist_line3 = na
+var line support_line1 = na
+var line support_line2 = na
+var line support_line3 = na
+
+if barstate.islast
+    // Delete old lines
+    if not na(resist_line1)
+        line.delete(resist_line1)
+    if not na(resist_line2)
+        line.delete(resist_line2)
+    if not na(resist_line3)
+        line.delete(resist_line3)
+    if not na(support_line1)
+        line.delete(support_line1)
+    if not na(support_line2)
+        line.delete(support_line2)
+    if not na(support_line3)
+        line.delete(support_line3)
+
+    // Draw Resistance Lines
+    if array.size(resist_levels) >= 1
+        resist_line1 := line.new(bar_index - 50, array.get(resist_levels, 0),
+                                  bar_index + 10, array.get(resist_levels, 0),
+                                  color=color.new(color.red, 30), width=1, style=line.style_dashed)
+        if show_sr_label
+            label.new(bar_index + 10, array.get(resist_levels, 0),
+                     "R1 " + str.tostring(math.round(array.get(resist_levels, 0), 2)),
+                     color=color.new(color.red, 70), textcolor=color.red, size=size.small,
+                     style=label.style_label_left)
+
+    if array.size(resist_levels) >= 2
+        resist_line2 := line.new(bar_index - 50, array.get(resist_levels, 1),
+                                  bar_index + 10, array.get(resist_levels, 1),
+                                  color=color.new(color.red, 50), width=1, style=line.style_dashed)
+        if show_sr_label
+            label.new(bar_index + 10, array.get(resist_levels, 1),
+                     "R2 " + str.tostring(math.round(array.get(resist_levels, 1), 2)),
+                     color=color.new(color.red, 70), textcolor=color.new(color.red, 30), size=size.small,
+                     style=label.style_label_left)
+
+    if array.size(resist_levels) >= 3
+        resist_line3 := line.new(bar_index - 50, array.get(resist_levels, 2),
+                                  bar_index + 10, array.get(resist_levels, 2),
+                                  color=color.new(color.red, 70), width=1, style=line.style_dotted)
+
+    // Draw Support Lines
+    if array.size(support_levels) >= 1
+        support_line1 := line.new(bar_index - 50, array.get(support_levels, 0),
+                                   bar_index + 10, array.get(support_levels, 0),
+                                   color=color.new(color.green, 30), width=1, style=line.style_dashed)
+        if show_sr_label
+            label.new(bar_index + 10, array.get(support_levels, 0),
+                     "S1 " + str.tostring(math.round(array.get(support_levels, 0), 2)),
+                     color=color.new(color.green, 70), textcolor=color.green, size=size.small,
+                     style=label.style_label_left)
+
+    if array.size(support_levels) >= 2
+        support_line2 := line.new(bar_index - 50, array.get(support_levels, 1),
+                                   bar_index + 10, array.get(support_levels, 1),
+                                   color=color.new(color.green, 50), width=1, style=line.style_dashed)
+        if show_sr_label
+            label.new(bar_index + 10, array.get(support_levels, 1),
+                     "S2 " + str.tostring(math.round(array.get(support_levels, 1), 2)),
+                     color=color.new(color.green, 70), textcolor=color.new(color.green, 30), size=size.small,
+                     style=label.style_label_left)
+
+    if array.size(support_levels) >= 3
+        support_line3 := line.new(bar_index - 50, array.get(support_levels, 2),
+                                   bar_index + 10, array.get(support_levels, 2),
+                                   color=color.new(color.green, 70), width=1, style=line.style_dotted)
+
+// ═══════════════════════════════════════
+// FIBONACCI
+// ═══════════════════════════════════════
+swing_high = ta.highest(high, fib_lookback)
+swing_low  = ta.lowest(low,  fib_lookback)
+fib_range  = swing_high - swing_low
+fib_382    = swing_high - fib_range * 0.382
+fib_500    = swing_high - fib_range * 0.500
+fib_618    = swing_high - fib_range * 0.618
+fib_705    = swing_high - fib_range * 0.705
+fib_786    = swing_high - fib_range * 0.786
+tol        = fib_range * fib_tol
+
+near_fib_buy =
+     (math.abs(close - fib_618) < tol) or
+     (math.abs(close - fib_705) < tol) or
+     (math.abs(close - fib_786) < tol)
+
+near_fib_sell =
+     (math.abs(close - fib_382) < tol) or
+     (math.abs(close - fib_500) < tol) or
+     (math.abs(close - fib_618) < tol)
+
+// ═══════════════════════════════════════
+// SR COMBINED (Auto + Fib)
+// ═══════════════════════════════════════
+strong_sr_buy  = auto_near_support or near_fib_buy
+strong_sr_sell = auto_near_resist  or near_fib_sell
+
+// ═══════════════════════════════════════
+// CANDLE ANALYSIS
+// ═══════════════════════════════════════
+body       = math.abs(close - open)
+upper_wick = high  - math.max(close, open)
+lower_wick = math.min(close, open) - low
+avg_body   = ta.sma(body, 10)
+bar_range  = high - low
+range_safe = bar_range == 0 ? syminfo.mintick : bar_range
+
+// Wick quality for XAU stop-hunt behavior
+long_lower_wick = lower_wick / range_safe >= wick_reclaim_min
+long_upper_wick = upper_wick / range_safe >= wick_reclaim_min
+
+extreme_lower_wick = lower_wick / range_safe >= extreme_wick_ratio
+extreme_upper_wick = upper_wick / range_safe >= extreme_wick_ratio
+
+// Bullish
+hammer        = close > open and lower_wick > body * 1.5 and upper_wick < body * 0.5
+bull_engulf   = close > open and close > high[1] and open < low[1]
+tweezer_bot   = math.abs(low - low[1]) < pip * 3 and close > open
+bull_wick     = lower_wick > body * 0.5
+strong_bull_c = close > open and body > avg_body * 1.2 and close > (high + low) / 2
+bull_reversal = hammer or bull_engulf or tweezer_bot or strong_bull_c
+
+// Bearish
+shooting_star = close < open and upper_wick > body * 1.5 and lower_wick < body * 0.5
+bear_engulf   = close < open and close < low[1] and open > high[1]
+tweezer_top   = math.abs(high - high[1]) < pip * 3 and close < open
+bear_wick     = upper_wick > body * 0.5
+strong_bear_c = close < open and body > avg_body * 1.2 and close < (high + low) / 2
+bear_reversal = shooting_star or bear_engulf or tweezer_top or strong_bear_c
+
+// ═══════════════════════════════════════
+// H4 / H1 MOMENTUM
+// ═══════════════════════════════════════
+h4_bull = h4_k < oversold  and h4_k > h4_k_prev
+h4_bear = h4_k > overbought and h4_k < h4_k_prev
+h4_wait = not h4_bull and not h4_bear
+
+h1_bull      = h1_k < 50 and ta.crossover(h1_k, h1_d)
+h1_bear      = h1_k > 50 and ta.crossunder(h1_k, h1_d)
+h1_hook_up   = h1_k > h1_k[1] and h1_k < 50
+h1_hook_down = h1_k < h1_k[1] and h1_k > 50
+
+// RSI
+rsi_rising  = h1_rsi > h1_rsi[1]
+rsi_falling = h1_rsi < h1_rsi[1]
+
+// RSI Divergence (NEW V4.3)
+rsi_bull_div = low  < low[2]  and h1_rsi > h1_rsi[2]  // ราคา low ใหม่ แต่ RSI ไม่ลงตาม
+rsi_bear_div = high > high[2] and h1_rsi < h1_rsi[2]  // ราคา high ใหม่ แต่ RSI ไม่ขึ้นตาม
+
+// ═══════════════════════════════════════
+// TREND
+// ═══════════════════════════════════════
+bull_trend = close > ema50 and ema20 > ema50
+bear_trend = close < ema50 and ema20 < ema50
+
+// ═══════════════════════════════════════
+// EMA RECLAIM / REJECT
+// ═══════════════════════════════════════
+ema_cross_bull   = close > ema20 and close[1] < ema20
+ema_cross_bear   = close < ema20 and close[1] > ema20
+ema_reclaim_bull = close > ema20 and close > close[1] and (ta.rising(ema20, 2) or ema_cross_bull)
+ema_reject_bear  = close < ema20 and close < close[1] and (ta.falling(ema20, 2) or ema_cross_bear)
+
+// ═══════════════════════════════════════
+// LIQUIDITY SWEEP + WICK RECLAIM
+// ═══════════════════════════════════════
+// Basic sweep = price takes previous liquidity
+liq_sweep_buy  = low  < ta.lowest(low,  5)[1] and close > low
+liq_sweep_sell = high > ta.highest(high, 5)[1] and close < high
+
+// Reclaim = fake breakdown/breakout back into zone
+support_reclaim = (auto_near_support or near_fib_buy) and low < close and long_lower_wick
+resist_reclaim  = (auto_near_resist or near_fib_sell) and high > close and long_upper_wick
+
+// Strong version for XAU: sweep + wick reclaim + close quality
+sweep_reclaim_buy  = liq_sweep_buy  and long_lower_wick and close > open
+sweep_reclaim_sell = liq_sweep_sell and long_upper_wick and close < open
+
+// ═══════════════════════════════════════
+// MARKET STRUCTURE BREAK
+// ═══════════════════════════════════════
+bull_structure = close > high[1] and close > open
+bear_structure = close < low[1]  and close < open
+
+// ═══════════════════════════════════════
+// VOLUME
+// ═══════════════════════════════════════
+vol_avg    = ta.sma(volume, vol_length)
+vol_spike  = volume > vol_avg * vol_mult
+rising_vol = ta.rising(volume, 2) and volume > vol_avg
+valid_vol  = vol_spike or rising_vol
+
+// Pullback context
+pullback_buy  = bull_trend and close > ema20 and low  <= ema20 + (sl_buf * pip)
+pullback_sell = bear_trend and close < ema20 and high >= ema20 - (sl_buf * pip)
+valid_buy_context  = strong_sr_buy  or pullback_buy
+valid_sell_context = strong_sr_sell or pullback_sell
+middle_range = not valid_buy_context and not valid_sell_context
+
+// ═══════════════════════════════════════
+// TREND CONTINUATION / EMA PULLBACK
+// ═══════════════════════════════════════
+ema20_hold_buy  = low <= ema20 + (sl_buf * pip) and close >= ema20
+ema20_hold_sell = high >= ema20 - (sl_buf * pip) and close <= ema20
+
+weak_pullback_buy = bull_trend and close > ema20 and (not require_ema_hold or ema20_hold_buy) and low >= ta.lowest(low, 3)[1] and body < avg_body * cont_body_max and not strong_bear_c
+weak_pullback_sell = bear_trend and close < ema20 and (not require_ema_hold or ema20_hold_sell) and high <= ta.highest(high, 3)[1] and body < avg_body * cont_body_max and not strong_bull_c
+
+continuation_buy = weak_pullback_buy and (h1_hook_up or ema_reclaim_bull or close > close[1])
+continuation_sell = weak_pullback_sell and (h1_hook_down or ema_reject_bear or close < close[1])
+
+// ═══════════════════════════════════════
+// SCORING SYSTEM V4.5 (Max 12)
+// ═══════════════════════════════════════
+b1 = strong_sr_buy     ? 2 : 0
+b2 = sweep_reclaim_buy ? sweep_score_weight : liq_sweep_buy ? 1 : 0
+b3 = bull_reversal     ? 1 : 0
+b4 = ema_reclaim_bull  ? 1 : 0
+b5 = bull_structure    ? 1 : 0
+b6 = valid_vol and bull_reversal ? 1 : 0
+b7 = h1_hook_up or h1_bull ? 1 : 0
+b8 = rsi_rising or rsi_bull_div ? 1 : 0  // NEW: RSI div included
+b9 = h4_bull           ? 1 : 0
+b10= rsi_bull_div      ? 1 : 0           // NEW: bonus for divergence
+b11= continuation_buy  ? cont_score_weight : 0
+
+buy_score = b1 + b2 + b3 + b4 + b5 + b6 + b7 + b8 + b9 + b10 + b11
+
+s1 = strong_sr_sell    ? 2 : 0
+s2 = sweep_reclaim_sell ? sweep_score_weight : liq_sweep_sell ? 1 : 0
+s3 = bear_reversal     ? 1 : 0
+s4 = ema_reject_bear   ? 1 : 0
+s5 = bear_structure    ? 1 : 0
+s6 = valid_vol and bear_reversal ? 1 : 0
+s7 = h1_hook_down or h1_bear ? 1 : 0
+s8 = rsi_falling or rsi_bear_div ? 1 : 0 // NEW: RSI div included
+s9 = h4_bear           ? 1 : 0
+s10= rsi_bear_div      ? 1 : 0           // NEW: bonus for divergence
+s11= continuation_sell ? cont_score_weight : 0
+
+sell_score = s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9 + s10 + s11
+
+// ═══════════════════════════════════════
+// SIGNAL CLASSIFICATION V4.5
+// ═══════════════════════════════════════
+// READY = watchlist only, not execution. Used for alert preparation.
+buy_ready = valid_buy_context and (liq_sweep_buy or support_reclaim or sweep_reclaim_buy or rsi_bull_div or continuation_buy) and not bear_trend and buy_score >= score_early - 1
+sell_ready = valid_sell_context and (liq_sweep_sell or resist_reclaim or sweep_reclaim_sell or rsi_bear_div or continuation_sell) and not bull_trend and sell_score >= score_early - 1
+
+full_buy = h4_bull and (h1_bull or h1_hook_up) and valid_buy_context and not bear_trend and buy_score >= score_full
+
+full_sell = h4_bear and (h1_bear or h1_hook_down) and valid_sell_context and not bull_trend and sell_score >= score_full
+
+// Early: ไม่ต้องมี valid_vol แต่เพิ่ม score แทน (ยืดหยุ่นกว่า V4.2)
+early_buy = h4_wait and valid_buy_context and (bull_reversal or continuation_buy) and (sweep_reclaim_buy or support_reclaim or ema_cross_bull or bull_structure or rsi_bull_div or continuation_buy) and buy_score >= score_early
+
+early_sell = h4_wait and valid_sell_context and (bear_reversal or continuation_sell) and (sweep_reclaim_sell or resist_reclaim or ema_cross_bear or bear_structure or rsi_bear_div or continuation_sell) and sell_score >= score_early
+
+buy_signal_raw  = full_buy or (early_buy and not full_sell)
+sell_signal_raw = full_sell or (early_sell and not full_buy)
+
+buy_signal  = buy_signal_raw and not no_trade_zone and not wick_risk_buy
+sell_signal = sell_signal_raw and not no_trade_zone and not wick_risk_sell
+
+// ═══════════════════════════════════════
+// AUTO SL/TP
+// ═══════════════════════════════════════
+sl_buffer = use_atr_sl ? atr * atr_sl_mult : sl_buf * pip
+sl_buy   = ta.lowest(low,  sl_lookback) - sl_buffer
+tp_buy   = close + ((close - sl_buy)  * rr_ratio)
+sl_sell  = ta.highest(high, sl_lookback) + sl_buffer
+tp_sell  = close - ((sl_sell - close) * rr_ratio)
+
+// AUTO ENTRY ENGINE
+buy_entry  = close + (atr * entry_buffer_atr)
+sell_entry = close - (atr * entry_buffer_atr)
+
+buy_risk  = math.abs(buy_entry - sl_buy)
+sell_risk = math.abs(sl_sell - sell_entry)
+
+buy_tp1 = buy_entry + (buy_risk * tp1_rr)
+buy_tp2 = buy_entry + (buy_risk * tp2_rr)
+
+sell_tp1 = sell_entry - (sell_risk * tp1_rr)
+sell_tp2 = sell_entry - (sell_risk * tp2_rr)
+
+buy_be = buy_entry + ((buy_tp2 - buy_entry) * 0.5)
+sell_be = sell_entry - ((sell_entry - sell_tp2) * 0.5)
+
+risk_buy    = close - sl_buy
+reward_buy  = tp_buy - close
+risk_sell   = sl_sell - close
+reward_sell = close - tp_sell
+rr_ok_buy   = risk_buy  > 0 and reward_buy  / risk_buy  >= min_rr
+rr_ok_sell  = risk_sell > 0 and reward_sell / risk_sell >= min_rr
+
+// Breakeven Level (50% TP)
+be_buy  = buy_signal  ? close + (tp_buy  - close) * 0.5 : na
+be_sell = sell_signal ? close - (close   - tp_sell) * 0.5 : na
+
+// ═══════════════════════════════════════
+// PLOT EMA
+// ═══════════════════════════════════════
+plot(ema20,  "EMA 20",  color=color.yellow, linewidth=1)
+plot(ema50,  "EMA 50",  color=color.orange, linewidth=2)
+plot(ema200, "EMA 200", color=color.white,  linewidth=2)
+
+// ═══════════════════════════════════════
+// PLOT FIBONACCI
+// ═══════════════════════════════════════
+plot(fib_382, "Fib 0.382", color=color.new(color.green,  60), linewidth=1)
+plot(fib_500, "Fib 0.500", color=color.new(color.white,  60), linewidth=1)
+plot(fib_618, "Fib 0.618", color=color.new(color.orange, 40), linewidth=2)
+plot(fib_705, "Fib 0.705", color=color.new(color.purple, 50), linewidth=1)
+plot(fib_786, "Fib 0.786", color=color.new(color.red,    50), linewidth=1)
+
+if barstate.islast
+    label.new(bar_index+2, fib_618, "★0.618=" + str.tostring(math.round(fib_618, 2)),
+             color=color.new(color.orange,70), textcolor=color.orange, size=size.small,
+             style=label.style_label_left)
+    label.new(bar_index+2, fib_786, "0.786=" + str.tostring(math.round(fib_786, 2)),
+             color=color.new(color.red,70), textcolor=color.red, size=size.small,
+             style=label.style_label_left)
+
+// ═══════════════════════════════════════
+// PLOT SIGNALS
+// ═══════════════════════════════════════
+plotshape(full_buy and rr_ok_buy,
+         title="FULL BUY", location=location.belowbar,
+         color=color.green, style=shape.triangleup,
+         size=size.large, text="BUY")
+
+plotshape(full_sell and rr_ok_sell,
+         title="FULL SELL", location=location.abovebar,
+         color=color.red, style=shape.triangledown,
+         size=size.large, text="SELL")
+
+plotshape(early_buy and not full_buy and rr_ok_buy,
+         title="EARLY BUY", location=location.belowbar,
+         color=color.aqua, style=shape.diamond,
+         size=size.normal, text="eBUY")
+
+plotshape(early_sell and not full_sell and rr_ok_sell,
+         title="EARLY SELL", location=location.abovebar,
+         color=color.fuchsia, style=shape.diamond,
+         size=size.normal, text="eSELL")
+
+plotshape(show_ready_signal and buy_ready and not buy_signal,
+         title="BUY READY", location=location.belowbar,
+         color=color.new(color.aqua, 35), style=shape.circle,
+         size=size.tiny, text="READY")
+
+plotshape(show_ready_signal and sell_ready and not sell_signal,
+         title="SELL READY", location=location.abovebar,
+         color=color.new(color.fuchsia, 35), style=shape.circle,
+         size=size.tiny, text="READY")
+
+plotshape(show_ready_signal and continuation_buy and not buy_signal,
+         title="CONT BUY", location=location.belowbar,
+         color=color.new(color.green, 40), style=shape.circle,
+         size=size.tiny, text="cBUY")
+
+plotshape(show_ready_signal and continuation_sell and not sell_signal,
+         title="CONT SELL", location=location.abovebar,
+         color=color.new(color.red, 40), style=shape.circle,
+         size=size.tiny, text="cSELL")
+
+// RSI Divergence Markers
+plotshape(rsi_bull_div and strong_sr_buy,
+         title="RSI Bull Div", location=location.belowbar,
+         color=color.new(color.lime, 30),
+         style=shape.xcross, size=size.tiny, text="DIV↑")
+
+plotshape(rsi_bear_div and strong_sr_sell,
+         title="RSI Bear Div", location=location.abovebar,
+         color=color.new(color.orange, 30),
+         style=shape.xcross, size=size.tiny, text="DIV↓")
+
+// Liquidity Sweep Markers
+plotshape(liq_sweep_buy,
+         title="Liq Sweep Buy", location=location.belowbar,
+         color=color.new(color.yellow, 50),
+         style=shape.xcross, size=size.tiny, text="LSB")
+
+plotshape(liq_sweep_sell,
+         title="Liq Sweep Sell", location=location.abovebar,
+         color=color.new(color.yellow, 50),
+         style=shape.xcross, size=size.tiny, text="LSS")
+
+// SL/TP Lines
+if buy_signal and rr_ok_buy
+    line.new(bar_index, sl_buy,  bar_index+15, sl_buy,
+             color=color.red,   width=1, style=line.style_dashed)
+    line.new(bar_index, tp_buy,  bar_index+15, tp_buy,
+             color=color.green, width=1, style=line.style_dashed)
+    line.new(bar_index, be_buy,  bar_index+15, be_buy,
+             color=color.yellow, width=1, style=line.style_dotted)
+
+if sell_signal and rr_ok_sell
+    line.new(bar_index, sl_sell, bar_index+15, sl_sell,
+             color=color.red,   width=1, style=line.style_dashed)
+    line.new(bar_index, tp_sell, bar_index+15, tp_sell,
+             color=color.green, width=1, style=line.style_dashed)
+    line.new(bar_index, be_sell, bar_index+15, be_sell,
+             color=color.yellow, width=1, style=line.style_dotted)
+
+// ═══════════════════════════════════════
+// DASHBOARD V4.3
+// ═══════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 26,
+     bgcolor=color.black, border_width=1, border_color=color.gray)
+
+trend_txt    = bull_trend ? "BULL" : bear_trend ? "BEAR" : "SIDE"
+trend_col    = bull_trend ? color.green : bear_trend ? color.red : color.gray
+h4_txt       = h4_bull ? "BULL" : h4_bear ? "BEAR" : middle_range ? "WAIT MID" : "WAIT"
+h4_col       = h4_bull ? color.green : h4_bear ? color.red : color.yellow
+h1_txt       = h1_bull ? "Cross Up" : h1_hook_up ? "Hook Up" : h1_bear ? "Cross Down" : h1_hook_down ? "Hook Down" : "WAIT"
+h1_col       = (h1_bull or h1_hook_up) ? color.green : (h1_bear or h1_hook_down) ? color.red : color.yellow
+candle_txt   = hammer ? "Hammer" : bull_engulf ? "Bull Engulf" : tweezer_bot ? "Tweezer Bot" : strong_bull_c ? "Strong Bull" : shooting_star ? "Shooting★" : bear_engulf ? "Bear Engulf" : tweezer_top ? "Tweezer Top" : strong_bear_c ? "Strong Bear" : "-"
+candle_col   = bull_reversal ? color.green : bear_reversal ? color.red : color.gray
+vol_txt      = vol_spike ? "SPIKE" : rising_vol ? "Rising" : "Normal"
+vol_col      = vol_spike ? color.yellow : rising_vol ? color.aqua : color.gray
+ema_txt      = ema_cross_bull ? "Cross↑" : ema_reclaim_bull ? "Above" : ema_cross_bear ? "Cross↓" : ema_reject_bear ? "Below" : "-"
+ema_col      = (ema_cross_bull or ema_reclaim_bull) ? color.green : (ema_cross_bear or ema_reject_bear) ? color.red : color.gray
+liq_txt      = sweep_reclaim_buy ? "Sweep+Reclaim Buy" : sweep_reclaim_sell ? "Sweep+Reclaim Sell" : support_reclaim ? "Support Reclaim" : resist_reclaim ? "Resist Reclaim" : liq_sweep_buy ? "Sweep Buy" : liq_sweep_sell ? "Sweep Sell" : "-"
+liq_col      = (sweep_reclaim_buy or support_reclaim or liq_sweep_buy) ? color.green : (sweep_reclaim_sell or resist_reclaim or liq_sweep_sell) ? color.red : color.gray
+struct_txt   = bull_structure ? "Break↑" : bear_structure ? "Break↓" : "-"
+struct_col   = bull_structure ? color.green : bear_structure ? color.red : color.gray
+cont_txt     = continuation_buy ? "Cont Buy" : continuation_sell ? "Cont Sell" : weak_pullback_buy ? "Weak PB Buy" : weak_pullback_sell ? "Weak PB Sell" : "-"
+cont_col     = continuation_buy ? color.green : continuation_sell ? color.red : (weak_pullback_buy or weak_pullback_sell) ? color.yellow : color.gray
+sr_txt       = auto_near_support ? "S=" + str.tostring(math.round(nearest_support, 2)) : auto_near_resist ? "R=" + str.tostring(math.round(nearest_resist, 2)) : near_fib_buy ? "Fib Buy" : near_fib_sell ? "Fib Sell" : pullback_buy ? "PB Buy" : pullback_sell ? "PB Sell" : "Middle"
+sr_col       = valid_buy_context ? color.green : valid_sell_context ? color.red : color.gray
+rsi_div_txt  = rsi_bull_div ? "Bull Div↑" : rsi_bear_div ? "Bear Div↓" : "-"
+rsi_div_col  = rsi_bull_div ? color.lime : rsi_bear_div ? color.orange : color.gray
+buy_s_col    = buy_score  >= score_full ? color.green : buy_score  >= score_early ? color.yellow : color.gray
+sell_s_col   = sell_score >= score_full ? color.red   : sell_score >= score_early ? color.yellow : color.gray
+sl_txt       = buy_signal  ? str.tostring(math.round(sl_buy,  2)) : sell_signal ? str.tostring(math.round(sl_sell, 2)) : "-"
+tp_txt       = buy_signal  ? str.tostring(math.round(tp_buy,  2)) : sell_signal ? str.tostring(math.round(tp_sell, 2)) : "-"
+be_txt       = buy_signal  ? str.tostring(math.round(be_buy,  2)) : sell_signal ? str.tostring(math.round(be_sell, 2)) : "-"
+rr_txt       = (buy_signal and rr_ok_buy) or (sell_signal and rr_ok_sell) ? "OK ✅" : (buy_signal or sell_signal) ? "Bad RR ❌" : "-"
+rr_col       = (buy_signal and rr_ok_buy) or (sell_signal and rr_ok_sell) ? color.green : (buy_signal or sell_signal) ? color.red : color.gray
+signal_txt   = full_buy and rr_ok_buy ? "FULL BUY" : full_sell and rr_ok_sell ? "FULL SELL" : early_buy and rr_ok_buy ? "EARLY BUY" : early_sell and rr_ok_sell ? "EARLY SELL" : buy_ready ? "BUY READY" : sell_ready ? "SELL READY" : middle_range ? "WAIT MID" : "WAIT"
+signal_col   = full_buy ? color.green : full_sell ? color.red : early_buy ? color.aqua : early_sell ? color.fuchsia : buy_ready ? color.aqua : sell_ready ? color.fuchsia : color.yellow
+
+active_score = buy_score > sell_score ? buy_score : sell_score
+grade_txt = no_trade_zone ? "NO TRADE" : active_score >= 8 ? "STRONG" : active_score >= 6 ? "CONFIRM" : active_score >= 4 ? "READY" : "WAIT"
+grade_col = grade_txt == "STRONG" ? color.lime : grade_txt == "CONFIRM" ? color.green : grade_txt == "READY" ? color.yellow : grade_txt == "NO TRADE" ? color.gray : color.gray
+trade_bias_txt = buy_score > sell_score ? "BUY Bias" : sell_score > buy_score ? "SELL Bias" : "Neutral"
+trade_bias_col = buy_score > sell_score ? color.green : sell_score > buy_score ? color.red : color.gray
+no_trade_txt = no_trade_zone ? (choppy_market ? "CHOPPY" : "MIDDLE") : wick_risk_buy ? "WICK BUY RISK" : wick_risk_sell ? "WICK SELL RISK" : "-"
+
+entry_txt = buy_signal ? str.tostring(buy_entry, format.mintick) : sell_signal ? str.tostring(sell_entry, format.mintick) : "-"
+tp1_txt = buy_signal ? str.tostring(buy_tp1, format.mintick) : sell_signal ? str.tostring(sell_tp1, format.mintick) : "-"
+tp2_txt = buy_signal ? str.tostring(buy_tp2, format.mintick) : sell_signal ? str.tostring(sell_tp2, format.mintick) : "-"
+be_dynamic_txt = buy_signal ? str.tostring(buy_be, format.mintick) : sell_signal ? str.tostring(sell_be, format.mintick) : "-"
+rr_quality_txt = buy_signal ? rr_quality_buy : sell_signal ? rr_quality_sell : "-"
+
+if barstate.islast
+    table.cell(dash, 0, 0,  "Layer",        text_color=color.white, bgcolor=color.navy)
+    table.cell(dash, 1, 0,  "Status",       text_color=color.white, bgcolor=color.navy)
+    table.cell(dash, 0, 1,  "L1 Trend",     text_color=color.white)
+    table.cell(dash, 1, 1,  trend_txt,      text_color=trend_col)
+    table.cell(dash, 0, 2,  "L2 H4 Stoch", text_color=color.white)
+    table.cell(dash, 1, 2,  h4_txt,         text_color=h4_col)
+    table.cell(dash, 0, 3,  "L3 H1 Stoch", text_color=color.white)
+    table.cell(dash, 1, 3,  h1_txt,         text_color=h1_col)
+    table.cell(dash, 0, 4,  "L4 Candle",   text_color=color.white)
+    table.cell(dash, 1, 4,  candle_txt,     text_color=candle_col)
+    table.cell(dash, 0, 5,  "L5 Volume",   text_color=color.white)
+    table.cell(dash, 1, 5,  vol_txt,        text_color=vol_col)
+    table.cell(dash, 0, 6,  "L6 EMA",      text_color=color.white)
+    table.cell(dash, 1, 6,  ema_txt,        text_color=ema_col)
+    table.cell(dash, 0, 7,  "L7 Liq Sweep",text_color=color.white)
+    table.cell(dash, 1, 7,  liq_txt,        text_color=liq_col)
+    table.cell(dash, 0, 8,  "L8 Structure", text_color=color.white)
+    table.cell(dash, 1, 8,  struct_txt,     text_color=struct_col)
+    table.cell(dash, 0, 9,  "L9 SR/Fib",   text_color=color.white)
+    table.cell(dash, 1, 9,  sr_txt,         text_color=sr_col)
+    table.cell(dash, 0, 10, "L10 RSI Div",  text_color=color.white)
+    table.cell(dash, 1, 10, rsi_div_txt,    text_color=rsi_div_col)
+    table.cell(dash, 0, 11, "L11 Continuation", text_color=color.white)
+    table.cell(dash, 1, 11, cont_txt,       text_color=cont_col)
+    table.cell(dash, 0, 12, "BUY Score",   text_color=color.white)
+    table.cell(dash, 1, 12, str.tostring(buy_score)  + "/12", text_color=buy_s_col)
+    table.cell(dash, 0, 13, "SELL Score",  text_color=color.white)
+    table.cell(dash, 1, 13, str.tostring(sell_score) + "/12", text_color=sell_s_col)
+    table.cell(dash, 0, 14, "Grade",       text_color=color.white)
+    table.cell(dash, 1, 14, grade_txt,      text_color=grade_col)
+    table.cell(dash, 0, 15, "Bias",        text_color=color.white)
+    table.cell(dash, 1, 15, trade_bias_txt, text_color=trade_bias_col)
+    table.cell(dash, 0, 16, "No Trade",    text_color=color.white)
+    table.cell(dash, 1, 16, no_trade_txt,   text_color=no_trade_zone ? color.gray : color.white)
+    table.cell(dash, 0, 17, "Entry",       text_color=color.white)
+    table.cell(dash, 1, 17, entry_txt,      text_color=color.aqua)
+
+    table.cell(dash, 0, 18, "SL",          text_color=color.white)
+    table.cell(dash, 1, 18, sl_txt,         text_color=color.red)
+
+    table.cell(dash, 0, 19, "TP1",         text_color=color.white)
+    table.cell(dash, 1, 19, tp1_txt,        text_color=color.green)
+
+    table.cell(dash, 0, 20, "TP2",         text_color=color.white)
+    table.cell(dash, 1, 20, tp2_txt,        text_color=color.lime)
+
+    table.cell(dash, 0, 21, "BE Move",     text_color=color.white)
+    table.cell(dash, 1, 21, be_dynamic_txt, text_color=color.yellow)
+
+    table.cell(dash, 0, 22, "RR Check",    text_color=color.white)
+    table.cell(dash, 1, 22, rr_txt,         text_color=rr_col)
+
+    table.cell(dash, 0, 23, "RR Quality",  text_color=color.white)
+    table.cell(dash, 1, 23, rr_quality_txt, text_color=buy_signal ? color.green : sell_signal ? color.red : color.gray)
+
+    table.cell(dash, 0, 24, "Bias",        text_color=color.white)
+    table.cell(dash, 1, 24, trade_bias_txt, text_color=trade_bias_col)
+
+    table.cell(dash, 0, 25, "🎯 Signal",   text_color=color.white, bgcolor=color.navy)
+    table.cell(dash, 1, 25, signal_txt,     text_color=signal_col, bgcolor=color.navy)
+
+// ═══════════════════════════════════════
+// ALERTS V4.5
+// ═══════════════════════════════════════
+alertcondition(buy_ready and not buy_signal,
+     title="🔵 BUY READY",
+     message="XAUUSD BUY READY - LSB/Reclaim detected. Wait confirmation before entry")
+
+alertcondition(sell_ready and not sell_signal,
+     title="🟣 SELL READY",
+     message="XAUUSD SELL READY - LSS/Reclaim detected. Wait confirmation before entry")
+
+alertcondition(continuation_buy and not buy_signal,
+     title="🟢 CONTINUATION BUY READY",
+     message="XAUUSD Continuation BUY Ready - EMA pullback holding")
+
+alertcondition(continuation_sell and not sell_signal,
+     title="🔴 CONTINUATION SELL READY",
+     message="XAUUSD Continuation SELL Ready - EMA pullback rejecting")
+
+alertcondition(grade_txt == "CONFIRM" and (buy_signal or sell_signal),
+     title="✅ SIGNAL CONFIRM",
+     message="XAUUSD Confirm Signal - check dashboard for direction, SL, TP")
+
+alertcondition(grade_txt == "STRONG" and (buy_signal or sell_signal),
+     title="🔥 SIGNAL STRONG",
+     message="XAUUSD Strong Signal - high quality setup, check SL/TP")
+
+alertcondition(full_buy and rr_ok_buy,
+     title="🟢 FULL BUY",
+     message="XAUUSD FULL BUY - check dashboard for SL/TP/BE")
+
+alertcondition(full_sell and rr_ok_sell,
+     title="🔴 FULL SELL",
+     message="XAUUSD FULL SELL - check dashboard for SL/TP/BE")
+
+alertcondition(early_buy and not full_buy and rr_ok_buy,
+     title="🔵 EARLY BUY",
+     message="XAUUSD EARLY BUY at SR/Fib - check dashboard")
+
+alertcondition(early_sell and not full_sell and rr_ok_sell,
+     title="🟣 EARLY SELL",
+     message="XAUUSD EARLY SELL at SR/Fib - check dashboard")
+
+alertcondition(rsi_bull_div and strong_sr_buy,
+     title="📈 RSI Bull Divergence",
+     message="XAUUSD RSI Bullish Divergence at Support")
+
+alertcondition(rsi_bear_div and strong_sr_sell,
+     title="📉 RSI Bear Divergence",
+     message="XAUUSD RSI Bearish Divergence at Resistance")
+
+alertcondition(liq_sweep_buy,
+     title="⚡ Liq Sweep BUY",
+     message="XAUUSD Liquidity Sweep BUY - potential reversal")
+
+alertcondition(liq_sweep_sell,
+     title="⚡ Liq Sweep SELL",
+     message="XAUUSD Liquidity Sweep SELL - potential reversal")
+
+alertcondition(sweep_reclaim_buy,
+     title="🟢 Sweep Reclaim BUY",
+     message="XAUUSD Sweep + Wick Reclaim BUY detected")
+
+alertcondition(sweep_reclaim_sell,
+     title="🔴 Sweep Reclaim SELL",
+     message="XAUUSD Sweep + Wick Reclaim SELL detected")
+
+// Breakeven Alert
+alertcondition(buy_signal and close >= be_buy,
+     title="🟡 Move SL to Breakeven (BUY)",
+     message="XAUUSD 50% TP reached - Move SL to Entry (Breakeven)")
+
+alertcondition(sell_signal and close <= be_sell,
+     title="🟡 Move SL to Breakeven (SELL)",
+     message="XAUUSD 50% TP reached - Move SL to Entry (Breakeven)")
+
+
+// AUTO ENTRY LINES
+plot(show_entry_lines and buy_signal ? buy_entry : na, title="BUY Entry", color=color.aqua, linewidth=2, style=plot.style_linebr)
+plot(show_entry_lines and sell_signal ? sell_entry : na, title="SELL Entry", color=color.fuchsia, linewidth=2, style=plot.style_linebr)
+
+plot(show_entry_lines and buy_signal ? sl_buy : sell_signal ? sl_sell : na, title="SL", color=color.red, linewidth=2, style=plot.style_linebr)
+
+plot(show_entry_lines and buy_signal ? buy_tp1 : sell_signal ? sell_tp1 : na, title="TP1", color=color.green, linewidth=2, style=plot.style_linebr)
+
+plot(show_entry_lines and buy_signal ? buy_tp2 : sell_signal ? sell_tp2 : na, title="TP2", color=color.lime, linewidth=2, style=plot.style_linebr)
