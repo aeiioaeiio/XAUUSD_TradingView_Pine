@@ -115,16 +115,26 @@ if array.size(support_levels) > 0
             nearest_support   := lvl
 
 // SR Lines
-var line rl1 = na; var line rl2 = na; var line rl3 = na
-var line sl1 = na; var line sl2 = na; var line sl3 = na
+var line rl1 = na
+var line rl2 = na
+var line rl3 = na
+var line sl1 = na
+var line sl2 = na
+var line sl3 = na
 
 if barstate.islast
-    if not na(rl1) then line.delete(rl1)
-    if not na(rl2) then line.delete(rl2)
-    if not na(rl3) then line.delete(rl3)
-    if not na(sl1) then line.delete(sl1)
-    if not na(sl2) then line.delete(sl2)
-    if not na(sl3) then line.delete(sl3)
+    if not na(rl1)
+        line.delete(rl1)
+    if not na(rl2)
+        line.delete(rl2)
+    if not na(rl3)
+        line.delete(rl3)
+    if not na(sl1)
+        line.delete(sl1)
+    if not na(sl2)
+        line.delete(sl2)
+    if not na(sl3)
+        line.delete(sl3)
     if array.size(resist_levels) >= 1
         rl1 := line.new(bar_index-50, array.get(resist_levels,0), bar_index+10, array.get(resist_levels,0), color=color.new(color.red,30), width=1, style=line.style_dashed)
         if show_sr_label
