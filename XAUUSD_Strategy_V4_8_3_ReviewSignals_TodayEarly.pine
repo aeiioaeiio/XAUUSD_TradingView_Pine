@@ -1,0 +1,700 @@
+//@version=5
+indicator("XAUUSD Strategy V4.8.3 - Review Signals + Today Early", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ═══════════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════════
+stoch_period  = input.int(5,  "Stoch Period",   group="Stoch")
+stoch_k       = input.int(3,  "Stoch K",        group="Stoch")
+stoch_d       = input.int(3,  "Stoch D",        group="Stoch")
+oversold      = input.int(20, "Oversold",       group="Stoch")
+overbought    = input.int(80, "Overbought",     group="Stoch")
+rsi_period    = input.int(14, "RSI Period",     group="RSI")
+ema_fast      = input.int(20,  "EMA Fast",      group="EMA")
+ema_slow      = input.int(50,  "EMA Slow",      group="EMA")
+ema_trend     = input.int(200, "EMA Trend",     group="EMA")
+fib_lookback  = input.int(50,     "Fib Lookback",     group="Fibonacci", minval=20)
+fib_tol       = input.float(0.008,"Fib Tolerance",    group="Fibonacci", step=0.001)
+sr_lookback   = input.int(20,  "SR Pivot Lookback",   group="Auto SR", minval=5)
+sr_zone_width = input.float(3.0,"SR Zone Width (pip)",group="Auto SR", step=0.5)
+show_sr_lines = input.bool(true, "Show SR Lines",       group="Auto SR")
+show_sr_label = input.bool(false,"Show SR Labels",      group="Auto SR")
+wick_reclaim_min    = input.float(0.45, "Min Wick Reclaim %",  group="Wick Reclaim", step=0.05)
+sweep_score_weight  = input.int(2, "Sweep+Reclaim Score",      group="Wick Reclaim", minval=1, maxval=4)
+show_ready_signal   = input.bool(false, "Show READY Signal",   group="Signal Display")
+cont_body_max       = input.float(0.85, "Cont Max Body x Avg", group="Continuation", step=0.05)
+cont_score_weight   = input.int(2, "Continuation Score",       group="Continuation", minval=1, maxval=4)
+require_ema_hold    = input.bool(true, "Require EMA20 Hold",   group="Continuation")
+vol_length    = input.int(20,    "Volume MA Length", group="Volume")
+vol_mult      = input.float(1.5, "Volume Spike x",   group="Volume", step=0.1)
+score_full    = input.int(5, "Full Signal Score",   group="Scoring", minval=3, maxval=14)
+score_early   = input.int(4, "Early Signal Score",  group="Scoring", minval=2, maxval=14)
+
+// Momentum Bear/Bull Settings (NEW V4.8)
+mom_bars      = input.int(3, "Momentum Consecutive Bars", group="Momentum", minval=2, maxval=5)
+mom_body_mult = input.float(1.2, "Momentum Body Mult",   group="Momentum", step=0.1)
+lsb_spam_bars = input.int(10, "LSB Spam Lookback",       group="Momentum", minval=5, maxval=20)
+lsb_spam_max  = input.int(3,  "Max LSB in Window",       group="Momentum", minval=2, maxval=6)
+dead_cat_bars = input.int(3,  "Dead Cat Bounce Bars",    group="Momentum", minval=2, maxval=6)
+
+rr_ratio      = input.float(1.5, "R:R Ratio",         group="Risk", step=0.1)
+sl_buf        = input.int(5,     "SL Buffer pip",      group="Risk")
+sl_lookback   = input.int(5,     "SL Swing Lookback",  group="Risk", minval=2, maxval=20)
+min_rr        = input.float(1.2, "Minimum RR",         group="Risk", step=0.1)
+atr_period    = input.int(14,    "ATR Period",         group="Risk")
+atr_sl_mult   = input.float(0.3, "ATR SL Buffer",      group="Risk", step=0.1)
+use_atr_sl    = input.bool(true, "Use ATR Dynamic SL", group="Risk")
+use_no_trade_filter = input.bool(true, "Use No Trade Filter",  group="No Trade Filter")
+atr_flat_mult       = input.float(0.75, "Low ATR Filter x",   group="No Trade Filter", step=0.05)
+ema_flat_len        = input.int(5, "EMA Flat Lookback",        group="No Trade Filter", minval=2)
+ema_flat_tol_atr    = input.float(0.15, "EMA Flat Tol ATR",   group="No Trade Filter", step=0.05)
+avoid_extreme_wick  = input.bool(true, "Avoid Extreme Wick",  group="No Trade Filter")
+extreme_wick_ratio  = input.float(0.65, "Extreme Wick %",     group="No Trade Filter", step=0.05)
+entry_buffer_atr    = input.float(0.10, "Entry Buffer ATR",   group="Execution", step=0.05)
+tp1_rr              = input.float(1.0,  "TP1 RR",             group="Execution", step=0.1)
+tp2_rr              = input.float(1.5,  "TP2 RR",             group="Execution", step=0.1)
+show_entry_lines    = input.bool(true, "Show Entry/SL/TP Lines", group="Execution")
+
+// Signal Mode / Professional Entry Filters (V4.8.3)
+// Review Mode = show more BUY/SELL markers so you can visually validate the logic.
+// Strict Mode = apply the professional filters for actual trading alerts.
+signal_mode          = input.string("Review", "Signal Mode", options=["Review", "Strict"], group="Pro Entry Filter")
+confirmed_only       = input.bool(true,  "Use Confirmed Candle Only", group="Pro Entry Filter")
+require_h4_alignment = input.bool(true,  "Strict: Require H4 Alignment", group="Pro Entry Filter")
+early_watch_only     = input.bool(true,  "Strict: Early/Momentum/DCB = Watch Only", group="Pro Entry Filter")
+block_chase_entries  = input.bool(true,  "Strict: Block Chase Entry far from EMA20", group="Pro Entry Filter")
+max_dist_ema_atr     = input.float(1.2,  "Max Distance from EMA20 x ATR", group="Pro Entry Filter", step=0.1)
+block_sell_at_support= input.bool(true,  "Strict: Block SELL near Support/Fib Buy", group="Pro Entry Filter")
+block_buy_at_resist  = input.bool(true,  "Strict: Block BUY near Resistance/Fib Sell", group="Pro Entry Filter")
+
+// Clean UI (Mobile Friendly)
+show_dashboard       = input.bool(true,  "Show Compact Dashboard", group="Clean UI")
+show_ema20           = input.bool(true,  "Show EMA20", group="Clean UI")
+show_ema50           = input.bool(true,  "Show EMA50", group="Clean UI")
+show_ema200          = input.bool(true,  "Show EMA200", group="Clean UI")
+show_fib             = input.bool(true,  "Show Key Fib Lines", group="Clean UI")
+show_fib_label       = input.bool(true,  "Show Latest Fib Labels", group="Clean UI")
+show_signal_history  = input.bool(true,  "Show Historical BUY/SELL Signals", group="Clean UI")
+show_early_today_only = input.bool(true,  "Show Early/Watch Today Only", group="Clean UI")
+show_history_entry_lines = input.bool(false, "Show Historical SL/TP Lines", group="Clean UI")
+show_latest_signal   = input.bool(true,  "Show Latest Signal Label Only", group="Clean UI")
+show_full_signals    = input.bool(true,  "Show BUY/SELL Entry Marks", group="Clean UI")
+show_watch_signals   = input.bool(true,  "Show Early/Watch Marks", group="Clean UI")
+show_early_duplicate = input.bool(true,  "Show Today eBUY/eSELL even if Entry Mark exists", group="Clean UI")
+show_score_candidates = input.bool(true, "Show Score Candidate BUY?/SELL?", group="Clean UI")
+show_sweep_marks     = input.bool(false, "Show LSB/LSS Marks", group="Clean UI")
+
+// ═══════════════════════════════════════
+// BASE CALCULATIONS
+// ═══════════════════════════════════════
+pip = syminfo.mintick * 10
+h1_k   = ta.sma(ta.stoch(close, high, low, stoch_period), stoch_k)
+h1_d   = ta.sma(h1_k, stoch_d)
+h1_rsi = ta.rsi(close, rsi_period)
+ema20  = ta.ema(close, ema_fast)
+ema50  = ta.ema(close, ema_slow)
+ema200 = ta.ema(close, ema_trend)
+atr    = ta.atr(atr_period)
+atr_avg= ta.sma(atr, 20)
+
+h4_k = request.security(syminfo.tickerid, "240",
+     ta.sma(ta.stoch(close, high, low, stoch_period), stoch_k)[1],
+     barmerge.gaps_off, barmerge.lookahead_off)
+h4_k_prev = request.security(syminfo.tickerid, "240",
+     ta.sma(ta.stoch(close, high, low, stoch_period), stoch_k)[2],
+     barmerge.gaps_off, barmerge.lookahead_off)
+h4_rsi = request.security(syminfo.tickerid, "240",
+     ta.rsi(close, rsi_period)[1],
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+// Today filter for EARLY/WATCH markers only.
+// Uses the chart/exchange date so old early signals do not clutter the chart.
+is_today = year(time) == year(timenow) and month(time) == month(timenow) and dayofmonth(time) == dayofmonth(timenow)
+watch_scope_ok = not show_early_today_only or is_today
+
+// ═══════════════════════════════════════
+// AUTO SR
+// ═══════════════════════════════════════
+ph = ta.pivothigh(high, sr_lookback, sr_lookback)
+pl = ta.pivotlow(low,  sr_lookback, sr_lookback)
+sr_width = sr_zone_width * pip
+var float[] resist_levels  = array.new_float(0)
+var float[] support_levels = array.new_float(0)
+
+if not na(ph)
+    array.unshift(resist_levels, ph)
+    if array.size(resist_levels) > 5
+        array.pop(resist_levels)
+if not na(pl)
+    array.unshift(support_levels, pl)
+    if array.size(support_levels) > 5
+        array.pop(support_levels)
+
+auto_near_resist  = false
+auto_near_support = false
+nearest_resist    = float(na)
+nearest_support   = float(na)
+
+if array.size(resist_levels) > 0
+    for i = 0 to array.size(resist_levels) - 1
+        lvl = array.get(resist_levels, i)
+        if math.abs(close - lvl) < sr_width
+            auto_near_resist := true
+            nearest_resist   := lvl
+
+if array.size(support_levels) > 0
+    for i = 0 to array.size(support_levels) - 1
+        lvl = array.get(support_levels, i)
+        if math.abs(close - lvl) < sr_width
+            auto_near_support := true
+            nearest_support   := lvl
+
+// SR Lines
+var line rl1 = na
+var line rl2 = na
+var line rl3 = na
+var line sl1 = na
+var line sl2 = na
+var line sl3 = na
+var label rlab1 = na
+var label rlab2 = na
+var label slab1 = na
+var label slab2 = na
+
+if barstate.islast
+    if not na(rl1)
+        line.delete(rl1)
+    if not na(rl2)
+        line.delete(rl2)
+    if not na(rl3)
+        line.delete(rl3)
+    if not na(sl1)
+        line.delete(sl1)
+    if not na(sl2)
+        line.delete(sl2)
+    if not na(sl3)
+        line.delete(sl3)
+    if not na(rlab1)
+        label.delete(rlab1)
+    if not na(rlab2)
+        label.delete(rlab2)
+    if not na(slab1)
+        label.delete(slab1)
+    if not na(slab2)
+        label.delete(slab2)
+
+    if show_sr_lines
+        if array.size(resist_levels) >= 1
+            rl1 := line.new(bar_index-50, array.get(resist_levels,0), bar_index+10, array.get(resist_levels,0), color=color.new(color.red,30), width=1, style=line.style_dashed)
+            if show_sr_label
+                rlab1 := label.new(bar_index+10, array.get(resist_levels,0), "R1 "+str.tostring(math.round(array.get(resist_levels,0),2)), color=color.new(color.red,70), textcolor=color.red, size=size.small, style=label.style_label_left)
+        if array.size(resist_levels) >= 2
+            rl2 := line.new(bar_index-50, array.get(resist_levels,1), bar_index+10, array.get(resist_levels,1), color=color.new(color.red,55), width=1, style=line.style_dashed)
+            if show_sr_label
+                rlab2 := label.new(bar_index+10, array.get(resist_levels,1), "R2 "+str.tostring(math.round(array.get(resist_levels,1),2)), color=color.new(color.red,75), textcolor=color.new(color.red,35), size=size.small, style=label.style_label_left)
+        if array.size(resist_levels) >= 3
+            rl3 := line.new(bar_index-50, array.get(resist_levels,2), bar_index+10, array.get(resist_levels,2), color=color.new(color.red,75), width=1, style=line.style_dotted)
+        if array.size(support_levels) >= 1
+            sl1 := line.new(bar_index-50, array.get(support_levels,0), bar_index+10, array.get(support_levels,0), color=color.new(color.green,30), width=1, style=line.style_dashed)
+            if show_sr_label
+                slab1 := label.new(bar_index+10, array.get(support_levels,0), "S1 "+str.tostring(math.round(array.get(support_levels,0),2)), color=color.new(color.green,70), textcolor=color.green, size=size.small, style=label.style_label_left)
+        if array.size(support_levels) >= 2
+            sl2 := line.new(bar_index-50, array.get(support_levels,1), bar_index+10, array.get(support_levels,1), color=color.new(color.green,55), width=1, style=line.style_dashed)
+            if show_sr_label
+                slab2 := label.new(bar_index+10, array.get(support_levels,1), "S2 "+str.tostring(math.round(array.get(support_levels,1),2)), color=color.new(color.green,75), textcolor=color.new(color.green,35), size=size.small, style=label.style_label_left)
+        if array.size(support_levels) >= 3
+            sl3 := line.new(bar_index-50, array.get(support_levels,2), bar_index+10, array.get(support_levels,2), color=color.new(color.green,75), width=1, style=line.style_dotted)
+
+// ═══════════════════════════════════════
+// FIBONACCI
+// ═══════════════════════════════════════
+swing_high = ta.highest(high, fib_lookback)
+swing_low  = ta.lowest(low,  fib_lookback)
+fib_range  = swing_high - swing_low
+fib_382    = swing_high - fib_range * 0.382
+fib_500    = swing_high - fib_range * 0.500
+fib_618    = swing_high - fib_range * 0.618
+fib_705    = swing_high - fib_range * 0.705
+fib_786    = swing_high - fib_range * 0.786
+tol        = fib_range * fib_tol
+
+near_fib_buy  = math.abs(close-fib_618)<tol or math.abs(close-fib_705)<tol or math.abs(close-fib_786)<tol
+near_fib_sell = math.abs(close-fib_382)<tol or math.abs(close-fib_500)<tol or math.abs(close-fib_618)<tol
+
+strong_sr_buy  = auto_near_support or near_fib_buy
+strong_sr_sell = auto_near_resist  or near_fib_sell
+
+// ═══════════════════════════════════════
+// CANDLE
+// ═══════════════════════════════════════
+body        = math.abs(close - open)
+upper_wick  = high  - math.max(close, open)
+lower_wick  = math.min(close, open) - low
+avg_body    = ta.sma(body, 10)
+bar_range   = high - low
+range_safe  = bar_range == 0 ? syminfo.mintick : bar_range
+
+long_lower_wick    = lower_wick / range_safe >= wick_reclaim_min
+long_upper_wick    = upper_wick / range_safe >= wick_reclaim_min
+extreme_lower_wick = lower_wick / range_safe >= extreme_wick_ratio
+extreme_upper_wick = upper_wick / range_safe >= extreme_wick_ratio
+
+hammer        = close > open and lower_wick > body*1.5 and upper_wick < body*0.5
+bull_engulf   = close > open and close > high[1] and open < low[1]
+tweezer_bot   = math.abs(low-low[1]) < pip*3 and close > open
+strong_bull_c = close > open and body > avg_body*1.2 and close > (high+low)/2
+bull_reversal = hammer or bull_engulf or tweezer_bot or strong_bull_c
+
+shooting_star = close < open and upper_wick > body*1.5 and lower_wick < body*0.5
+bear_engulf   = close < open and close < low[1] and open > high[1]
+tweezer_top   = math.abs(high-high[1]) < pip*3 and close < open
+strong_bear_c = close < open and body > avg_body*1.2 and close < (high+low)/2
+bear_reversal = shooting_star or bear_engulf or tweezer_top or strong_bear_c
+
+// ═══════════════════════════════════════
+// H4 / H1 MOMENTUM
+// ═══════════════════════════════════════
+h4_bull = h4_k < oversold   and h4_k > h4_k_prev
+h4_bear = h4_k > overbought and h4_k < h4_k_prev
+h4_wait = not h4_bull and not h4_bear
+
+h1_bull      = h1_k < 50 and ta.crossover(h1_k, h1_d)
+h1_bear      = h1_k > 50 and ta.crossunder(h1_k, h1_d)
+h1_hook_up   = h1_k > h1_k[1] and h1_k < 50
+h1_hook_down = h1_k < h1_k[1] and h1_k > 50
+
+rsi_rising   = h1_rsi > h1_rsi[1]
+rsi_falling  = h1_rsi < h1_rsi[1]
+rsi_bull_div = low  < low[2]  and h1_rsi > h1_rsi[2]
+rsi_bear_div = high > high[2] and h1_rsi < h1_rsi[2]
+
+bull_trend = close > ema50 and ema20 > ema50
+bear_trend = close < ema50 and ema20 < ema50
+
+ema_cross_bull   = close > ema20 and close[1] < ema20
+ema_cross_bear   = close < ema20 and close[1] > ema20
+ema_reclaim_bull = close > ema20 and close > close[1] and (ta.rising(ema20,2) or ema_cross_bull)
+ema_reject_bear  = close < ema20 and close < close[1] and (ta.falling(ema20,2) or ema_cross_bear)
+
+// ═══════════════════════════════════════
+// LIQUIDITY SWEEP + RECLAIM
+// ═══════════════════════════════════════
+liq_sweep_buy  = low  < ta.lowest(low,  5)[1] and close > low
+liq_sweep_sell = high > ta.highest(high, 5)[1] and close < high
+
+support_reclaim = (auto_near_support or near_fib_buy)  and low < close and long_lower_wick
+resist_reclaim  = (auto_near_resist  or near_fib_sell) and high > close and long_upper_wick
+
+sweep_reclaim_buy  = liq_sweep_buy  and long_lower_wick and close > open
+sweep_reclaim_sell = liq_sweep_sell and long_upper_wick and close < open
+
+// ═══════════════════════════════════════
+// MARKET STRUCTURE
+// ═══════════════════════════════════════
+bull_structure = close > high[1] and close > open
+bear_structure = close < low[1]  and close < open
+
+// ═══════════════════════════════════════
+// VOLUME
+// ═══════════════════════════════════════
+vol_avg   = ta.sma(volume, vol_length)
+vol_spike = volume > vol_avg * vol_mult
+rising_vol= ta.rising(volume,2) and volume > vol_avg
+valid_vol = vol_spike or rising_vol
+
+// ═══════════════════════════════════════
+// CONTEXT
+// ═══════════════════════════════════════
+pullback_buy  = bull_trend and close > ema20 and low  <= ema20 + (sl_buf*pip)
+pullback_sell = bear_trend and close < ema20 and high >= ema20 - (sl_buf*pip)
+valid_buy_context  = strong_sr_buy  or pullback_buy
+valid_sell_context = strong_sr_sell or pullback_sell
+middle_range = not valid_buy_context and not valid_sell_context
+
+// ═══════════════════════════════════════
+// CONTINUATION
+// ═══════════════════════════════════════
+ema20_hold_buy  = low  <= ema20+(sl_buf*pip) and close >= ema20
+ema20_hold_sell = high >= ema20-(sl_buf*pip) and close <= ema20
+weak_pullback_buy  = bull_trend and close > ema20 and (not require_ema_hold or ema20_hold_buy)  and low  >= ta.lowest(low,3)[1]  and body < avg_body*cont_body_max and not strong_bear_c
+weak_pullback_sell = bear_trend and close < ema20 and (not require_ema_hold or ema20_hold_sell) and high <= ta.highest(high,3)[1] and body < avg_body*cont_body_max and not strong_bull_c
+continuation_buy  = weak_pullback_buy  and (h1_hook_up   or ema_reclaim_bull or close > close[1])
+continuation_sell = weak_pullback_sell and (h1_hook_down  or ema_reject_bear  or close < close[1])
+
+// ═══════════════════════════════════════
+// NO TRADE FILTER
+// ═══════════════════════════════════════
+low_atr      = atr < atr_avg * atr_flat_mult
+ema_flat     = math.abs(ema20 - ema20[ema_flat_len]) < atr * ema_flat_tol_atr
+choppy_market= low_atr and ema_flat and middle_range
+wick_risk_buy  = avoid_extreme_wick and extreme_upper_wick and not sweep_reclaim_buy
+wick_risk_sell = avoid_extreme_wick and extreme_lower_wick and not sweep_reclaim_sell
+no_trade_zone  = use_no_trade_filter and (choppy_market or middle_range)
+
+// ═══════════════════════════════════════
+// NEW V4.8: MOMENTUM BEAR/BULL
+// ═══════════════════════════════════════
+
+// 1. Momentum Bear: ราคาลงต่อเนื่อง N แท่ง + body ใหญ่ + ใต้ EMA
+momentum_bear_bars = true
+for mb = 0 to mom_bars - 1
+    if close[mb] >= close[mb+1]
+        momentum_bear_bars := false
+
+momentum_bear = momentum_bear_bars and
+     body > avg_body * mom_body_mult and
+     close < ema20 and close < ema50 and
+     not bull_trend
+
+// Momentum Bull: ขึ้นต่อเนื่อง N แท่ง
+momentum_bull_bars = true
+for mb = 0 to mom_bars - 1
+    if close[mb] <= close[mb+1]
+        momentum_bull_bars := false
+
+momentum_bull = momentum_bull_bars and
+     body > avg_body * mom_body_mult and
+     close > ema20 and close > ema50 and
+     not bear_trend
+
+// 2. LSB Spam Filter: LSB ซ้ำเกินในระยะสั้น = Distribution ไม่ใช่ Reversal
+lsb_count_window = 0
+for lw = 0 to lsb_spam_bars - 1
+    if liq_sweep_buy[lw]
+        lsb_count_window := lsb_count_window + 1
+
+lsb_spam = lsb_count_window >= lsb_spam_max and bear_trend
+// ถ้า LSB spam ใน BEAR trend = ห้าม BUY
+
+// 3. Dead Cat Bounce SELL: ราคาเด้งขึ้นใน BEAR แล้ว reject EMA
+price_bounced_up  = close > close[dead_cat_bars] and bear_trend
+dead_cat_sell = price_bounced_up and
+     close < ema20 and
+     (ema_reject_bear or bear_reversal or shooting_star) and
+     not bull_trend and
+     high < ema50  // ยังไม่ทะลุ EMA50
+
+// ═══════════════════════════════════════
+// SCORING V4.8 (Max 14)
+// ═══════════════════════════════════════
+b1  = strong_sr_buy      ? 2 : 0
+b2  = sweep_reclaim_buy  ? sweep_score_weight : liq_sweep_buy ? 1 : 0
+b3  = bull_reversal      ? 1 : 0
+b4  = ema_reclaim_bull   ? 1 : 0
+b5  = bull_structure     ? 1 : 0
+b6  = valid_vol and bull_reversal ? 1 : 0
+b7  = h1_hook_up or h1_bull ? 1 : 0
+b8  = rsi_rising or rsi_bull_div ? 1 : 0
+b9  = h4_bull            ? 1 : 0
+b10 = rsi_bull_div       ? 1 : 0
+b11 = continuation_buy   ? cont_score_weight : 0
+b12 = momentum_bull      ? 2 : 0  // NEW V4.8
+buy_score = b1+b2+b3+b4+b5+b6+b7+b8+b9+b10+b11+b12
+
+s1  = strong_sr_sell     ? 2 : 0
+s2  = sweep_reclaim_sell ? sweep_score_weight : liq_sweep_sell ? 1 : 0
+s3  = bear_reversal      ? 1 : 0
+s4  = ema_reject_bear    ? 1 : 0
+s5  = bear_structure     ? 1 : 0
+s6  = valid_vol and bear_reversal ? 1 : 0
+s7  = h1_hook_down or h1_bear ? 1 : 0
+s8  = rsi_falling or rsi_bear_div ? 1 : 0
+s9  = h4_bear            ? 1 : 0
+s10 = rsi_bear_div       ? 1 : 0
+s11 = continuation_sell  ? cont_score_weight : 0
+s12 = momentum_bear      ? 2 : 0  // NEW V4.8
+s13 = dead_cat_sell      ? 2 : 0  // NEW V4.8
+sell_score = s1+s2+s3+s4+s5+s6+s7+s8+s9+s10+s11+s12+s13
+
+// ═══════════════════════════════════════
+// SIGNALS V4.8
+// ═══════════════════════════════════════
+buy_ready  = valid_buy_context  and (liq_sweep_buy  or support_reclaim or sweep_reclaim_buy  or rsi_bull_div or continuation_buy)  and not bear_trend and buy_score  >= score_early-1
+sell_ready = valid_sell_context and (liq_sweep_sell or resist_reclaim  or sweep_reclaim_sell or rsi_bear_div or continuation_sell) and not bull_trend and sell_score >= score_early-1
+
+full_buy  = h4_bull and (h1_bull or h1_hook_up)   and valid_buy_context  and not bear_trend and buy_score  >= score_full
+full_sell = h4_bear and (h1_bear or h1_hook_down) and valid_sell_context and not bull_trend and sell_score >= score_full
+
+// Momentum SELL: ไม่ต้องรอ H4 BEAR — จับขาลงแรง
+momentum_sell_signal = momentum_bear and sell_score >= score_early and not bull_trend and not lsb_spam
+
+// Dead Cat SELL
+dead_cat_signal = dead_cat_sell and sell_score >= score_early and not bull_trend
+
+early_buy  = h4_wait and valid_buy_context  and (bull_reversal or continuation_buy)  and
+             (sweep_reclaim_buy  or support_reclaim or ema_cross_bull or bull_structure or rsi_bull_div or continuation_buy) and
+             buy_score >= score_early and not lsb_spam  // NEW: block ถ้า LSB spam
+
+early_sell = h4_wait and valid_sell_context and (bear_reversal or continuation_sell) and
+             (sweep_reclaim_sell or resist_reclaim  or ema_cross_bear or bear_structure or rsi_bear_div or continuation_sell or dead_cat_sell) and
+             sell_score >= score_early
+
+// Professional entry filters (V4.8.3)
+strict_mode        = signal_mode == "Strict"
+confirmed_ok       = not confirmed_only or barstate.isconfirmed
+chase_buy          = strict_mode and block_chase_entries and close > ema20 + atr * max_dist_ema_atr
+chase_sell         = strict_mode and block_chase_entries and close < ema20 - atr * max_dist_ema_atr
+h4_allows_buy      = strict_mode and require_h4_alignment ? h4_bull : true
+h4_allows_sell     = strict_mode and require_h4_alignment ? h4_bear : true
+context_blocks_buy = strict_mode and block_buy_at_resist and (auto_near_resist or near_fib_sell)
+context_blocks_sell= strict_mode and block_sell_at_support and (auto_near_support or near_fib_buy)
+trade_filter_block = strict_mode and no_trade_zone
+risk_blocks_buy    = strict_mode and (wick_risk_buy or lsb_spam)
+risk_blocks_sell   = strict_mode and wick_risk_sell
+
+// Review Mode: include early / momentum / DCB in BUY/SELL entry marks for visual validation.
+// Strict Mode: keep early / momentum / DCB as watch-only unless user turns early_watch_only off.
+entry_buy_review   = full_buy or early_buy
+entry_sell_review  = full_sell or early_sell or momentum_sell_signal or dead_cat_signal
+entry_buy_strict   = full_buy or (not early_watch_only and early_buy)
+entry_sell_strict  = full_sell or (not early_watch_only and (early_sell or momentum_sell_signal or dead_cat_signal))
+entry_buy_raw      = strict_mode ? entry_buy_strict : entry_buy_review
+entry_sell_raw     = strict_mode ? entry_sell_strict : entry_sell_review
+
+buy_signal  = entry_buy_raw  and not trade_filter_block and not risk_blocks_buy  and confirmed_ok and not chase_buy  and h4_allows_buy  and not context_blocks_buy
+sell_signal = entry_sell_raw and not trade_filter_block and not risk_blocks_sell and confirmed_ok and not chase_sell and h4_allows_sell and not context_blocks_sell
+
+buy_watch   = (buy_ready or early_buy) and not buy_signal and confirmed_ok and not (strict_mode and lsb_spam)
+sell_watch  = (sell_ready or early_sell or momentum_sell_signal or dead_cat_signal) and not sell_signal and confirmed_ok
+
+// Signal Type label
+wait_reason = no_trade_zone ? "NO TRADE" : (chase_buy or chase_sell) ? "WAIT CHASE" : (context_blocks_buy or context_blocks_sell) ? "WAIT ZONE" : not confirmed_ok ? "WAIT CLOSE" : "WAIT"
+signal_type = buy_signal  ? "FULL BUY"  :
+              sell_signal ? "FULL SELL" :
+              buy_watch   ? "WATCH BUY" :
+              sell_watch  ? "WATCH SELL" : wait_reason
+
+// ═══════════════════════════════════════
+// SL/TP
+// ═══════════════════════════════════════
+sl_buffer = use_atr_sl ? atr*atr_sl_mult : sl_buf*pip
+sl_buy    = ta.lowest(low,  sl_lookback) - sl_buffer
+tp_buy    = close + ((close-sl_buy)  * rr_ratio)
+sl_sell   = ta.highest(high,sl_lookback) + sl_buffer
+tp_sell   = close - ((sl_sell-close) * rr_ratio)
+
+buy_entry  = close + (atr*entry_buffer_atr)
+sell_entry = close - (atr*entry_buffer_atr)
+buy_risk   = math.abs(buy_entry-sl_buy)
+sell_risk  = math.abs(sl_sell-sell_entry)
+buy_tp1    = buy_entry  + (buy_risk  * tp1_rr)
+buy_tp2    = buy_entry  + (buy_risk  * tp2_rr)
+sell_tp1   = sell_entry - (sell_risk * tp1_rr)
+sell_tp2   = sell_entry - (sell_risk * tp2_rr)
+buy_be     = buy_entry  + ((buy_tp2  - buy_entry)  * 0.5)
+sell_be    = sell_entry - ((sell_entry - sell_tp2) * 0.5)
+
+risk_buy    = close - sl_buy
+reward_buy  = tp_buy - close
+risk_sell   = sl_sell - close
+reward_sell = close - tp_sell
+rr_ok_buy   = risk_buy  > 0 and reward_buy  / risk_buy  >= min_rr
+rr_ok_sell  = risk_sell > 0 and reward_sell / risk_sell >= min_rr
+buy_rr      = risk_buy  > 0 ? reward_buy  / risk_buy  : 0.0
+sell_rr     = risk_sell > 0 ? reward_sell / risk_sell : 0.0
+be_buy      = buy_signal  ? close + (tp_buy  - close) * 0.5 : na
+be_sell     = sell_signal ? close - (close   - tp_sell)*0.5 : na
+
+// ═══════════════════════════════════════
+// PLOT EMA + FIB
+// ═══════════════════════════════════════
+plot(show_ema20  ? ema20  : na, "EMA 20",  color=color.yellow, linewidth=1)
+plot(show_ema50  ? ema50  : na, "EMA 50",  color=color.orange, linewidth=2)
+plot(show_ema200 ? ema200 : na, "EMA 200", color=color.white,  linewidth=2)
+plot(show_fib ? fib_618 : na, "Fib 0.618", color=color.new(color.orange,40), linewidth=2)
+plot(show_fib ? fib_786 : na, "Fib 0.786", color=color.new(color.red,   50), linewidth=1)
+plot(show_fib ? fib_382 : na, "Fib 0.382", color=color.new(color.green, 60), linewidth=1)
+
+var label fib618Label = na
+var label fib786Label = na
+if barstate.islast
+    if not na(fib618Label)
+        label.delete(fib618Label)
+    if not na(fib786Label)
+        label.delete(fib786Label)
+    if show_fib and show_fib_label
+        fib618Label := label.new(bar_index+2, fib_618, "★0.618="+str.tostring(math.round(fib_618,2)), color=color.new(color.orange,70), textcolor=color.orange, size=size.small, style=label.style_label_left)
+        fib786Label := label.new(bar_index+2, fib_786, "0.786="+str.tostring(math.round(fib_786,2)),  color=color.new(color.red,70),    textcolor=color.red,    size=size.small, style=label.style_label_left)
+
+// ═══════════════════════════════════════
+// PLOT SIGNALS V4.8.3
+// - BUY/SELL entry marks can show history for review.
+// - Early/Watch marks show only today's signals by default.
+// ═══════════════════════════════════════
+entry_buy_mark  = show_full_signals and show_signal_history and buy_signal and rr_ok_buy
+entry_sell_mark = show_full_signals and show_signal_history and sell_signal and rr_ok_sell
+
+// Early/watch markers are intentionally limited to today to keep old signals from blocking price action.
+// In Review Mode, the same bar may also have BUY/SELL entry mark so you can compare entry vs early logic.
+early_buy_mark  = show_watch_signals and watch_scope_ok and early_buy and rr_ok_buy and (show_early_duplicate or not buy_signal)
+early_sell_mark = show_watch_signals and watch_scope_ok and early_sell and rr_ok_sell and (show_early_duplicate or not sell_signal)
+mom_sell_mark   = show_watch_signals and watch_scope_ok and momentum_sell_signal and not full_sell and rr_ok_sell and (show_early_duplicate or not sell_signal)
+dcb_sell_mark   = show_watch_signals and watch_scope_ok and dead_cat_signal and not full_sell and not momentum_sell_signal and rr_ok_sell and (show_early_duplicate or not sell_signal)
+
+// Score candidates are for visual review only. They show where the score is leaning BUY/SELL,
+// even if a full/early pattern was not completed.
+score_buy_mark  = show_score_candidates and show_signal_history and not buy_signal and buy_score >= score_early and buy_score > sell_score and confirmed_ok
+score_sell_mark = show_score_candidates and show_signal_history and not sell_signal and sell_score >= score_early and sell_score > buy_score and confirmed_ok
+
+plotshape(entry_buy_mark,
+         title="ENTRY BUY", location=location.belowbar,
+         color=color.green, style=shape.triangleup, size=size.normal, text="BUY")
+
+plotshape(entry_sell_mark,
+         title="ENTRY SELL", location=location.abovebar,
+         color=color.red, style=shape.triangledown, size=size.normal, text="SELL")
+
+plotshape(early_buy_mark,
+         title="TODAY EARLY BUY", location=location.belowbar,
+         color=color.new(color.aqua,10), style=shape.diamond, size=size.tiny, text="eBUY")
+
+plotshape(early_sell_mark,
+         title="TODAY EARLY SELL", location=location.abovebar,
+         color=color.new(color.fuchsia,10), style=shape.diamond, size=size.tiny, text="eSELL")
+
+plotshape(mom_sell_mark,
+         title="TODAY MOM WATCH SELL", location=location.abovebar,
+         color=color.new(color.red,20), style=shape.triangledown, size=size.tiny, text="mSELL")
+
+plotshape(dcb_sell_mark,
+         title="TODAY DCB WATCH SELL", location=location.abovebar,
+         color=color.new(color.orange,20), style=shape.triangledown, size=size.tiny, text="dSELL")
+
+plotshape(score_buy_mark,
+         title="SCORE BUY CANDIDATE", location=location.belowbar,
+         color=color.new(color.green,70), style=shape.circle, size=size.tiny, text="BUY?")
+
+plotshape(score_sell_mark,
+         title="SCORE SELL CANDIDATE", location=location.abovebar,
+         color=color.new(color.red,70), style=shape.circle, size=size.tiny, text="SELL?")
+
+plotshape(show_ready_signal and watch_scope_ok and buy_ready and not buy_signal,
+         title="TODAY BUY READY",  location=location.belowbar,
+         color=color.new(color.aqua,45), style=shape.circle, size=size.tiny, text="R")
+
+plotshape(show_ready_signal and watch_scope_ok and sell_ready and not sell_signal,
+         title="TODAY SELL READY", location=location.abovebar,
+         color=color.new(color.fuchsia,45), style=shape.circle, size=size.tiny, text="R")
+
+plotshape(show_signal_history and show_sweep_marks and lsb_spam,
+         title="LSB SPAM", location=location.belowbar,
+         color=color.new(color.gray,50), style=shape.xcross, size=size.tiny, text="⚠")
+
+plotshape(show_signal_history and show_sweep_marks and liq_sweep_buy and not lsb_spam,
+         title="LSB", location=location.belowbar,
+         color=color.new(color.yellow,55), style=shape.xcross, size=size.tiny, text="LSB")
+
+plotshape(show_signal_history and show_sweep_marks and liq_sweep_sell,
+         title="LSS", location=location.abovebar,
+         color=color.new(color.yellow,55), style=shape.xcross, size=size.tiny, text="LSS")
+
+// Latest signal label only — keeps mobile chart clean
+var label latestSignalLabel = na
+if barstate.islast and show_latest_signal
+    if not na(latestSignalLabel)
+        label.delete(latestSignalLabel)
+    if buy_signal and rr_ok_buy
+        latestSignalLabel := label.new(bar_index, low, "BUY\nA+", style=label.style_label_up, color=color.new(color.green,0), textcolor=color.white, size=size.small)
+    else if sell_signal and rr_ok_sell
+        latestSignalLabel := label.new(bar_index, high, "SELL\nA+", style=label.style_label_down, color=color.new(color.red,0), textcolor=color.white, size=size.small)
+    else if buy_watch and show_watch_signals
+        latestSignalLabel := label.new(bar_index, low, "WATCH\nBUY", style=label.style_label_up, color=color.new(color.aqua,25), textcolor=color.white, size=size.tiny)
+    else if sell_watch and show_watch_signals
+        latestSignalLabel := label.new(bar_index, high, "WATCH\nSELL", style=label.style_label_down, color=color.new(color.fuchsia,25), textcolor=color.white, size=size.tiny)
+
+// SL/TP Lines
+if show_entry_lines and (show_history_entry_lines or barstate.islast) and buy_signal and rr_ok_buy
+    line.new(bar_index, sl_buy,  bar_index+15, sl_buy,  color=color.red,    width=1, style=line.style_dashed)
+    line.new(bar_index, buy_tp1, bar_index+15, buy_tp1, color=color.green,  width=1, style=line.style_dashed)
+    line.new(bar_index, buy_tp2, bar_index+15, buy_tp2, color=color.lime,   width=1, style=line.style_dashed)
+    line.new(bar_index, buy_be,  bar_index+15, buy_be,  color=color.yellow, width=1, style=line.style_dotted)
+
+if show_entry_lines and (show_history_entry_lines or barstate.islast) and sell_signal and rr_ok_sell
+    line.new(bar_index, sl_sell,  bar_index+15, sl_sell,  color=color.red,    width=1, style=line.style_dashed)
+    line.new(bar_index, sell_tp1, bar_index+15, sell_tp1, color=color.green,  width=1, style=line.style_dashed)
+    line.new(bar_index, sell_tp2, bar_index+15, sell_tp2, color=color.lime,   width=1, style=line.style_dashed)
+    line.new(bar_index, sell_be,  bar_index+15, sell_be,  color=color.yellow, width=1, style=line.style_dotted)
+
+// Entry lines
+plot(show_entry_lines and (show_history_entry_lines or barstate.islast) and buy_signal  ? buy_entry  : na, "BUY Entry",  color=color.aqua,    linewidth=2, style=plot.style_linebr)
+plot(show_entry_lines and (show_history_entry_lines or barstate.islast) and sell_signal ? sell_entry : na, "SELL Entry", color=color.fuchsia, linewidth=2, style=plot.style_linebr)
+
+// ═══════════════════════════════════════
+// COMPACT DASHBOARD V4.8.3 — smaller for mobile
+// ═══════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 8,
+     bgcolor=color.new(color.black,15), border_width=1, border_color=color.new(color.gray,60))
+
+active_score  = buy_score > sell_score ? buy_score : sell_score
+grade_txt     = no_trade_zone ? "NO TRADE" : active_score >= 9 ? "STRONG" : active_score >= 7 ? "CONFIRM" : active_score >= 6 ? "WATCH" : "WAIT"
+grade_col     = grade_txt=="STRONG" ? color.lime : grade_txt=="CONFIRM" ? color.green : grade_txt=="WATCH" ? color.yellow : color.gray
+bias_txt      = buy_score > sell_score ? "BUY" : sell_score > buy_score ? "SELL" : "Neutral"
+bias_col      = buy_score > sell_score ? color.green : sell_score > buy_score ? color.red : color.gray
+
+ctx_txt = auto_near_support ? "S="+str.tostring(math.round(nearest_support,2)) :
+          auto_near_resist  ? "R="+str.tostring(math.round(nearest_resist,2))  :
+          near_fib_buy      ? "Fib Buy"   :
+          near_fib_sell     ? "Fib Sell"  :
+          pullback_buy      ? "PB Buy"    :
+          pullback_sell     ? "PB Sell"   :
+          lsb_spam          ? "LSB SPAM" : "Middle"
+ctx_col = (auto_near_support or near_fib_buy or pullback_buy) ? color.green :
+          (auto_near_resist  or near_fib_sell or pullback_sell) ? color.red :
+          lsb_spam ? color.gray : color.gray
+
+filter_txt = no_trade_zone ? (choppy_market ? "CHOPPY" : "MIDDLE") :
+             chase_buy or chase_sell ? "CHASE" :
+             context_blocks_buy or context_blocks_sell ? "BAD ZONE" :
+             lsb_spam ? "LSB SPAM" :
+             wick_risk_buy ? "WICK UP" :
+             wick_risk_sell ? "WICK DOWN" : "OK"
+filter_col = filter_txt=="OK" ? color.green : color.gray
+
+sl_disp  = buy_signal  ? str.tostring(math.round(sl_buy,  2)) : sell_signal ? str.tostring(math.round(sl_sell, 2)) : "-"
+tp1_disp = buy_signal  ? str.tostring(math.round(buy_tp1, 2)) : sell_signal ? str.tostring(math.round(sell_tp1,2)) : "-"
+tp2_disp = buy_signal  ? str.tostring(math.round(buy_tp2, 2)) : sell_signal ? str.tostring(math.round(sell_tp2,2)) : "-"
+rr_disp  = buy_signal  ? str.tostring(math.round(buy_rr,  2)) : sell_signal ? str.tostring(math.round(sell_rr, 2)) : "-"
+rr_col2  = (buy_signal and rr_ok_buy) or (sell_signal and rr_ok_sell) ? color.green : color.gray
+
+signal_col = buy_signal ? color.green : sell_signal ? color.red : buy_watch ? color.aqua : sell_watch ? color.fuchsia : color.gray
+h4_txt = h4_bull ? "H4↑" : h4_bear ? "H4↓" : "H4 wait"
+h4_col = h4_bull ? color.green : h4_bear ? color.red : color.yellow
+h1_txt = h1_bull ? "H1 Cross↑" : h1_hook_up ? "H1 Hook↑" : h1_bear ? "H1 Cross↓" : h1_hook_down ? "H1 Hook↓" : "H1 wait"
+
+if barstate.islast and show_dashboard
+    table.cell(dash,0,0,"XAU V4.8.3",text_color=color.white,bgcolor=color.navy,text_size=size.small)
+    table.cell(dash,1,0,signal_type,text_color=signal_col,bgcolor=color.navy,text_size=size.small)
+
+    table.cell(dash,0,1,"MTF",text_color=color.white,text_size=size.small)
+    table.cell(dash,1,1,h4_txt+" | "+h1_txt,text_color=h4_col,text_size=size.small)
+
+    table.cell(dash,0,2,"Score",text_color=color.white,text_size=size.small)
+    table.cell(dash,1,2,"B:"+str.tostring(buy_score)+" S:"+str.tostring(sell_score)+" "+grade_txt,text_color=grade_col,text_size=size.small)
+
+    table.cell(dash,0,3,"Context",text_color=color.white,text_size=size.small)
+    table.cell(dash,1,3,ctx_txt,text_color=ctx_col,text_size=size.small)
+
+    table.cell(dash,0,4,"Filter",text_color=color.white,text_size=size.small)
+    table.cell(dash,1,4,filter_txt,text_color=filter_col,text_size=size.small)
+
+    table.cell(dash,0,5,"SL / TP1",text_color=color.white,text_size=size.small)
+    table.cell(dash,1,5,sl_disp+" / "+tp1_disp,text_color=color.white,text_size=size.small)
+
+    table.cell(dash,0,6,"TP2 / RR",text_color=color.white,text_size=size.small)
+    table.cell(dash,1,6,tp2_disp+" / "+rr_disp,text_color=rr_col2,text_size=size.small)
+
+    table.cell(dash,0,7,"Bias",text_color=color.white,bgcolor=color.navy,text_size=size.small)
+    table.cell(dash,1,7,bias_txt,text_color=bias_col,bgcolor=color.navy,text_size=size.small)
+
+// ═══════════════════════════════════════
+// ALERTS V4.8.3
+// ═══════════════════════════════════════
+alertcondition(buy_signal  and rr_ok_buy,  title="🟢 PRO BUY",  message="XAUUSD PRO BUY A+ - check SL/TP dashboard")
+alertcondition(sell_signal and rr_ok_sell, title="🔴 PRO SELL", message="XAUUSD PRO SELL A+ - check SL/TP dashboard")
+alertcondition(buy_watch,  title="🔵 WATCH BUY",  message="XAUUSD WATCH BUY only - wait for A+ confirmation")
+alertcondition(sell_watch, title="🟣 WATCH SELL", message="XAUUSD WATCH SELL only - wait for A+ confirmation")
+alertcondition(lsb_spam,  title="⚠️ LSB SPAM WARNING", message="XAUUSD LSB spam detected - DO NOT BUY")
+alertcondition(sweep_reclaim_buy,  title="🟢 Sweep Reclaim BUY",  message="XAUUSD Sweep+Reclaim BUY")
+alertcondition(sweep_reclaim_sell, title="🔴 Sweep Reclaim SELL", message="XAUUSD Sweep+Reclaim SELL")
+alertcondition(buy_signal  and close >= be_buy,  title="🟡 BE BUY",  message="XAUUSD 50% TP - Move SL to Breakeven")
+alertcondition(sell_signal and close <= be_sell, title="🟡 BE SELL", message="XAUUSD 50% TP - Move SL to Breakeven")
