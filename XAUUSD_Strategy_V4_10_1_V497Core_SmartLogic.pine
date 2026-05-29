@@ -1,0 +1,382 @@
+//@version=5
+strategy("XAUUSD Strategy V4.10.1 - V497 Core Smart Logic", overlay=true, max_lines_count=500, max_labels_count=500, initial_capital=1000, default_qty_type=strategy.fixed, default_qty_value=1, commission_type=strategy.commission.cash_per_order, commission_value=0)
+
+//═══════════════════════════════════════
+// SETTINGS
+//═══════════════════════════════════════
+stochLen   = input.int(5,  "Stoch Period", group="Core")
+stochKLen  = input.int(3,  "Stoch K",      group="Core")
+stochDLen  = input.int(3,  "Stoch D",      group="Core")
+rsiLen     = input.int(14, "RSI Period",   group="Core")
+emaFastLen = input.int(20, "EMA Fast",     group="Core")
+emaSlowLen = input.int(50, "EMA Slow",     group="Core")
+emaTrendLen= input.int(200,"EMA Trend",    group="Core")
+atrLen     = input.int(14, "ATR Period",   group="Risk")
+
+mode = input.string("Confirm Only", "Backtest Mode", options=["Confirm Only", "Confirm + Scalp", "Scalp Only", "Sell Only", "Buy Only"], group="Backtest")
+useConfirmedBar = input.bool(true, "Use Closed Bar Only", group="Backtest")
+
+// V4.10.1: keep profitable V4.9 core, add Trend Flip / Reclaim filters to avoid SELL after bullish reversal.
+enableBuyConfirm  = input.bool(true,  "Enable BUY CONFIRM",  group="V4.10.1 Signal Legs")
+enableSellConfirm = input.bool(true,  "Enable SELL CONFIRM", group="V4.10.1 Signal Legs")
+enableLsbScalp    = input.bool(false, "Enable LSB SCALP",    group="V4.10.1 Signal Legs")
+enableLssScalp    = input.bool(false, "Enable LSS SCALP",    group="V4.10.1 Signal Legs")
+showDisabledLegs  = input.bool(false, "Show Disabled Scalp Marks for Review", group="V4.10.1 Signal Legs")
+
+sellOb      = input.float(70, "M15 Sell OB Level", group="M15 Trigger")
+buyOs       = input.float(30, "M15 Buy OS Level",  group="M15 Trigger")
+wickPct     = input.float(0.35, "M15 Rejection Wick %", group="M15 Trigger", step=0.05)
+requireM15  = input.bool(true, "Require M15 Trigger for Confirm", group="M15 Trigger")
+
+fibLookback = input.int(50, "Fib Lookback", group="Zone")
+fibTolAtr   = input.float(0.45, "Fib/EMA Zone Tolerance x ATR", group="Zone", step=0.05)
+noChaseAtr  = input.float(1.35, "No Chase Distance from EMA20 x ATR", group="Zone", step=0.05)
+
+rrBuyConfirm  = input.float(1.5, "BUY Confirm TP RR",  group="Risk", step=0.1)
+rrSellConfirm = input.float(1.6, "SELL Confirm TP RR", group="Risk", step=0.1)
+rrScalp     = input.float(0.8, "Scalp TP RR", group="Risk", step=0.1)
+slAtrBuf    = input.float(0.35, "Confirm SL Buffer x ATR", group="Risk", step=0.05)
+scalpSlAtr  = input.float(0.12, "Scalp SL Buffer x ATR", group="Risk", step=0.02)
+swingLb     = input.int(8, "Confirm SL Swing Lookback", group="Risk", minval=2)
+scalpLb     = input.int(3, "Scalp SL Swing Lookback", group="Risk", minval=1)
+
+showDash    = input.bool(true, "Show Dashboard", group="Display")
+showSignals = input.bool(true, "Show Signals", group="Display")
+showWatch   = input.bool(true, "Show Watch Marks", group="Display")
+showFib     = input.bool(true, "Show Key Fib", group="Display")
+
+// V4.10.1 Drawdown Cut Filters
+// Important: default is BLOCK trade, not cap SL. This makes the result visibly different from V4.10.1/4.9.4.
+useRiskBlock     = input.bool(false, "Block Trade if SL too wide", group="V4.10.1 Risk Filters")
+maxSlPoints      = input.float(60.0, "Max SL Distance (price points)", group="V4.10.1 Risk Filters", step=1.0)
+useAtrSpikeBlock = input.bool(true,  "Block Trade during ATR Spike", group="V4.10.1 Risk Filters")
+atrSpikeLen      = input.int(50,     "ATR Spike MA Length", group="V4.10.1 Risk Filters", minval=10)
+atrSpikeMult     = input.float(1.65, "Max ATR x Average ATR", group="V4.10.1 Risk Filters", step=0.05)
+
+// BUY losses were the weakest part of V4.10.1, so BUY can be made stricter without changing SELL core too much.
+useStrictBuyV495 = input.bool(true,  "Use Strict BUY Quality", group="V4.10.1 BUY Quality")
+buyRsiMinV495    = input.float(45.0, "BUY Min H1 RSI", group="V4.10.1 BUY Quality", step=0.5)
+requireBuyEma20  = input.bool(true,  "BUY Require Close > EMA20", group="V4.10.1 BUY Quality")
+requireBuyH4Ok   = input.bool(true,  "BUY Block H4 Bear", group="V4.10.1 BUY Quality")
+requireBuyAbove200 = input.bool(false, "BUY Require Close > EMA200", group="V4.10.1 BUY Quality")
+
+// SELL adaptive model. V4.9.3 had the best SELL leg; V4.9.6 improved total result but over-blocked SELL.
+// Default keeps V4.9.3 SELL core, but blocks only clear bullish reclaim / higher-low flips.
+sellAdaptMode = input.string("Core + Soft Guard", "SELL Adapt Mode", options=["V4.9.3 Core", "Core + Soft Guard", "Strict Trend Flip"], group="V4.10.1 Adaptive SELL")
+useSellRsiGuard  = input.bool(true,  "SELL RSI Guard", group="V4.10.1 Adaptive SELL")
+sellRsiMaxV495   = input.float(62.0, "SELL Max H1 RSI", group="V4.10.1 Adaptive SELL", step=0.5)
+requireSellReject = input.bool(false, "SELL Require H1/M15 Rejection", group="V4.10.1 Adaptive SELL")
+
+// Trend Flip / Reclaim Filters. Soft Guard blocks only strong bullish flips, not every small EMA reclaim.
+useBullReclaimBlockSell = input.bool(true, "Block SELL after Bull Reclaim", group="V4.10.1 Trend Flip")
+reclaimSlopeLen         = input.int(2, "EMA20 Rising Bars", group="V4.10.1 Trend Flip", minval=1, maxval=5)
+useHigherLowBlockSell   = input.bool(true, "Block SELL after Higher Low", group="V4.10.1 Trend Flip")
+useSellExitCooldown     = input.bool(true, "Cooldown SELL after SELL Exit", group="V4.10.1 Trend Flip")
+sellCooldownBars        = input.int(3, "SELL Cooldown Bars", group="V4.10.1 Trend Flip", minval=1, maxval=20)
+useBreakoutRetestBuy    = input.bool(true, "Allow Breakout Retest BUY", group="V4.10.1 Trend Flip")
+breakoutBuyRsiMin       = input.float(43.0, "Breakout BUY Min RSI", group="V4.10.1 Trend Flip", step=0.5)
+
+// V4.10.1 Smart Logic Guard: keep V4.10.1 profit character, but block only the worst regimes.
+useDeepBearBuyBlock     = input.bool(true,  "Block BUY below Falling EMA200 + H4 Bear", group="V4.10.1 Smart Guard")
+useWeeklySoftRegime     = input.bool(false, "Soft Weekly Regime Guard", group="V4.10.1 Smart Guard")
+weeklyFlatPct           = input.float(0.30, "Weekly Flat Threshold %", group="V4.10.1 Smart Guard", step=0.05)
+useDailyLossGuard       = input.bool(false, "Use Daily Loss Guard", group="V4.10.1 Smart Guard")
+maxDailyLossUsd         = input.float(10.0, "Max Daily Loss $", group="V4.10.1 Smart Guard", step=1.0)
+useBadModeLite          = input.bool(false, "Use Bad Mode Lite Guard", group="V4.10.1 Smart Guard")
+badLookbackTrades       = input.int(6, "Bad Mode Lookback Trades", group="V4.10.1 Smart Guard", minval=3, maxval=20)
+badLossCount            = input.int(5, "Bad Mode Losses >=", group="V4.10.1 Smart Guard", minval=2, maxval=20)
+badPnlThreshold         = input.float(120.0, "Bad Mode Recent Loss $", group="V4.10.1 Smart Guard", step=10.0)
+badCooldownBars         = input.int(24, "Bad Mode Cooldown Bars", group="V4.10.1 Smart Guard", minval=1, maxval=200)
+useSoftSessionGuard     = input.bool(false, "Soft London/NY Session Guard", group="V4.10.1 Smart Guard")
+useSellFlipOverride     = input.bool(true, "Allow Strong SELL Rejection Override", group="V4.10.1 Smart Guard")
+
+//═══════════════════════════════════════
+// HELPER FUNCTIONS
+//═══════════════════════════════════════
+f_k() => ta.sma(ta.stoch(close, high, low, stochLen), stochKLen)
+f_d() => ta.sma(f_k(), stochDLen)
+f_rng() => math.max(high - low, syminfo.mintick)
+f_upper() => high - math.max(open, close)
+f_lower() => math.min(open, close) - low
+
+//═══════════════════════════════════════
+// BASE / MTF DATA
+//═══════════════════════════════════════
+ema20  = ta.ema(close, emaFastLen)
+ema50  = ta.ema(close, emaSlowLen)
+ema200 = ta.ema(close, emaTrendLen)
+atr    = ta.atr(atrLen)
+atrAvg = ta.sma(atr, atrSpikeLen)
+rsi    = ta.rsi(close, rsiLen)
+k      = f_k()
+d      = f_d()
+
+h4K = request.security(syminfo.tickerid, "240", f_k(), barmerge.gaps_off, barmerge.lookahead_off)
+h4D = request.security(syminfo.tickerid, "240", f_d(), barmerge.gaps_off, barmerge.lookahead_off)
+h4Close = request.security(syminfo.tickerid, "240", close, barmerge.gaps_off, barmerge.lookahead_off)
+h4Ema50 = request.security(syminfo.tickerid, "240", ta.ema(close, emaSlowLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+wEma20 = request.security(syminfo.tickerid, "W", ta.ema(close, 20), barmerge.gaps_off, barmerge.lookahead_off)
+wEma50 = request.security(syminfo.tickerid, "W", ta.ema(close, 50), barmerge.gaps_off, barmerge.lookahead_off)
+
+m15O = request.security(syminfo.tickerid, "15", open,  barmerge.gaps_off, barmerge.lookahead_off)
+m15H = request.security(syminfo.tickerid, "15", high,  barmerge.gaps_off, barmerge.lookahead_off)
+m15L = request.security(syminfo.tickerid, "15", low,   barmerge.gaps_off, barmerge.lookahead_off)
+m15C = request.security(syminfo.tickerid, "15", close, barmerge.gaps_off, barmerge.lookahead_off)
+m15K = request.security(syminfo.tickerid, "15", f_k(), barmerge.gaps_off, barmerge.lookahead_off)
+m15D = request.security(syminfo.tickerid, "15", f_d(), barmerge.gaps_off, barmerge.lookahead_off)
+m15Rsi = request.security(syminfo.tickerid, "15", ta.rsi(close, rsiLen), barmerge.gaps_off, barmerge.lookahead_off)
+m15Rng = request.security(syminfo.tickerid, "15", f_rng(), barmerge.gaps_off, barmerge.lookahead_off)
+m15Upper = request.security(syminfo.tickerid, "15", f_upper(), barmerge.gaps_off, barmerge.lookahead_off)
+m15Lower = request.security(syminfo.tickerid, "15", f_lower(), barmerge.gaps_off, barmerge.lookahead_off)
+
+confirmed = useConfirmedBar ? barstate.isconfirmed : true
+
+//═══════════════════════════════════════
+// TREND / ZONE
+//═══════════════════════════════════════
+h1Bear = close < ema50 and ema20 < ema50 and close < ema200
+h1Bull = close > ema50 and ema20 > ema50
+h4Bear = h4Close < h4Ema50 or (h4K > 50 and h4K < h4D)
+h4Bull = h4Close > h4Ema50 or (h4K < 50 and h4K > h4D)
+
+swingHigh = ta.highest(high, fibLookback)
+swingLow  = ta.lowest(low, fibLookback)
+fibRange  = math.max(swingHigh - swingLow, syminfo.mintick)
+fib618    = swingHigh - fibRange * 0.618
+fib786    = swingHigh - fibRange * 0.786
+fib382    = swingHigh - fibRange * 0.382
+fib500    = swingHigh - fibRange * 0.500
+zoneTol   = atr * fibTolAtr
+
+nearSellZone = math.abs(close - ema20) <= zoneTol or math.abs(close - ema50) <= zoneTol or math.abs(close - fib382) <= zoneTol or math.abs(close - fib500) <= zoneTol or math.abs(close - fib618) <= zoneTol
+nearBuyZone  = math.abs(close - ema20) <= zoneTol or math.abs(close - fib618) <= zoneTol or math.abs(close - fib786) <= zoneTol or low <= ta.lowest(low, 10)[1] + zoneTol
+
+chaseSell = close < ema20 - atr * noChaseAtr
+chaseBuy  = close > ema20 + atr * noChaseAtr
+
+//═══════════════════════════════════════
+// CANDLE / TRIGGER
+//═══════════════════════════════════════
+barRng = math.max(high - low, syminfo.mintick)
+upperW = high - math.max(open, close)
+lowerW = math.min(open, close) - low
+bearReject = upperW / barRng >= 0.35 and close < open
+bullReject = lowerW / barRng >= 0.35 and close > open
+
+m15BearReject = m15Upper / m15Rng >= wickPct and m15C < m15O
+m15BullReject = m15Lower / m15Rng >= wickPct and m15C > m15O
+m15HookDown   = m15K < m15D and m15K < m15K[1]
+m15HookUp     = m15K > m15D and m15K > m15K[1]
+m15SellTrig   = (m15K >= sellOb or m15K[1] >= sellOb) and (m15HookDown or m15BearReject or m15C < m15O and m15C < m15C[1])
+m15BuyTrig    = (m15K <= buyOs or m15K[1] <= buyOs) and (m15HookUp or m15BullReject or m15C > m15O and m15C > m15C[1])
+
+// Liquidity sweep scalp
+lsb = low < ta.lowest(low, 5)[1] and close > low and lowerW / barRng >= 0.45
+lss = high > ta.highest(high, 5)[1] and close < high and upperW / barRng >= 0.45
+
+//═══════════════════════════════════════
+// V4.10.1 TREND FLIP / RECLAIM FILTERS
+//═══════════════════════════════════════
+// Two layers:
+// 1) Strict = V4.9.6 style, blocks early whenever price reclaims EMA.
+// 2) Soft = blocks only clear bullish flip, so SELL keeps the profitable V4.9.3 behavior.
+bullReclaimStrict = useBullReclaimBlockSell and close > ema20 and close > ema50 and ta.rising(ema20, reclaimSlopeLen) and (k > d or m15K > m15D)
+higherLowStrict   = useHigherLowBlockSell and close > ema20 and low > low[1] and high > high[1] and close > close[1]
+
+bullReclaimSoft   = useBullReclaimBlockSell and close > ema20 and close > ema50 and ta.rising(ema20, reclaimSlopeLen) and k > d and m15K > m15D and close > close[1]
+higherLowSoft     = useHigherLowBlockSell and close > ema20 and low > low[1] and low[1] > low[2] and high > high[1] and close > close[1] and m15K > m15D
+
+var int lastSellExitBar = na
+if strategy.position_size[1] < 0 and strategy.position_size >= 0
+    lastSellExitBar := bar_index
+
+barsFromSellExit = na(lastSellExitBar) ? 100000 : bar_index - lastSellExitBar
+sellExitCooldownStrict = useSellExitCooldown and barsFromSellExit <= sellCooldownBars and close > ema20
+sellExitCooldownSoft   = useSellExitCooldown and barsFromSellExit <= sellCooldownBars and close > ema20 and ta.rising(ema20, reclaimSlopeLen) and m15K > m15D
+
+blockSellStrict = bullReclaimStrict or higherLowStrict or sellExitCooldownStrict
+blockSellSoft   = bullReclaimSoft or higherLowSoft or sellExitCooldownSoft
+blockSellTrendFlipBase = sellAdaptMode == "V4.9.3 Core" ? false : sellAdaptMode == "Strict Trend Flip" ? blockSellStrict : blockSellSoft
+strongSellRejectionOverride = useSellFlipOverride and blockSellTrendFlipBase and nearSellZone and (m15BearReject or bearReject) and m15HookDown and rsi <= sellRsiMaxV495
+blockSellTrendFlip = blockSellTrendFlipBase and not strongSellRejectionOverride
+
+// Buy model for the red-box scenario: EMA reclaim, then retest/hold, with M15 still supportive.
+breakoutRetestBuy = useBreakoutRetestBuy and close > ema20 and close > ema50 and ta.rising(ema20, reclaimSlopeLen) and low <= ema20 + zoneTol and close > open and rsi >= breakoutBuyRsiMin and (m15K > m15D or m15HookUp or m15BullReject) and not h4Bear
+
+//═══════════════════════════════════════
+// V4.10.1 SMART GUARDS
+//═══════════════════════════════════════
+weeklyBear = wEma20 < wEma50
+weeklyBull = wEma20 > wEma50
+weeklyFlat = math.abs(wEma20 - wEma50) / math.max(wEma50, syminfo.mintick) <= weeklyFlatPct / 100.0
+ema200Falling = ta.falling(ema200, 5)
+deepBearBuyBlock = useDeepBearBuyBlock and close < ema200 and ema200Falling and h4Bear
+weeklySoftBuyBlock = useWeeklySoftRegime and weeklyBear and close < ema200 and not breakoutRetestBuy
+
+newDay = ta.change(time("D")) != 0
+var float dayStartNet = na
+if na(dayStartNet) or newDay
+    dayStartNet := strategy.netprofit
+dailyPnL = strategy.netprofit - dayStartNet
+dailyLossHit = useDailyLossGuard and dailyPnL <= -maxDailyLossUsd
+
+closedCount = strategy.closedtrades
+recentLosses = 0
+recentPnl = 0.0
+lookN = int(math.min(badLookbackTrades, closedCount))
+if lookN > 0
+    for bi = 0 to lookN - 1
+        tradePnl = strategy.closedtrades.profit(closedCount - 1 - bi)
+        recentPnl += tradePnl
+        if tradePnl < 0
+            recentLosses += 1
+
+var int lastClosedCount = 0
+var int badModeUntil = na
+if closedCount > lastClosedCount
+    lastClosedCount := closedCount
+    if useBadModeLite and recentLosses >= badLossCount and recentPnl <= -badPnlThreshold
+        badModeUntil := bar_index + badCooldownBars
+badModeActive = useBadModeLite and not na(badModeUntil) and bar_index <= badModeUntil
+
+hourUtc = hour(time, "UTC")
+inLondonNy = (hourUtc >= 8 and hourUtc < 12) or (hourUtc >= 13 and hourUtc < 17)
+softSessionBuyOk = not useSoftSessionGuard or inLondonNy or breakoutRetestBuy or (m15BullReject and m15HookUp)
+softSessionSellOk = not useSoftSessionGuard or inLondonNy or (m15BearReject and m15HookDown) or (bearReject and m15HookDown)
+
+smartBlockAll = dailyLossHit or badModeActive
+smartBlockBuy = smartBlockAll or deepBearBuyBlock or weeklySoftBuyBlock
+smartBlockSell = smartBlockAll
+
+//═══════════════════════════════════════
+// PROFESSIONAL STATE MODEL
+//═══════════════════════════════════════
+watchSell = confirmed and not smartBlockSell and h1Bear and nearSellZone and not chaseSell and not blockSellTrendFlip and softSessionSellOk and (m15K > sellOb or bearReject or m15BearReject)
+watchBuy  = confirmed and not smartBlockBuy and ((h1Bull or lsb) and nearBuyZone or breakoutRetestBuy) and not chaseBuy and softSessionBuyOk and (m15K < buyOs or bullReject or m15BullReject or lsb or breakoutRetestBuy)
+
+// V4.10.1 quality filters
+atrOk = not useAtrSpikeBlock or atr <= atrAvg * atrSpikeMult
+buyQuality495 = not useStrictBuyV495 or (rsi >= buyRsiMinV495 and (not requireBuyEma20 or close > ema20) and (not requireBuyH4Ok or not h4Bear) and (not requireBuyAbove200 or close > ema200))
+sellQuality495 = not useSellRsiGuard or rsi <= sellRsiMaxV495
+
+sellRejectOk = not requireSellReject or bearReject or m15BearReject or m15HookDown
+sellConfirm = confirmed and atrOk and not smartBlockSell and h1Bear and nearSellZone and not chaseSell and not blockSellTrendFlip and softSessionSellOk and (not requireM15 or m15SellTrig) and (h4Bear or not h4Bull) and sellQuality495 and sellRejectOk
+buyConfirm  = confirmed and atrOk and not smartBlockBuy and softSessionBuyOk and ((h1Bull and nearBuyZone and (not requireM15 or m15BuyTrig) and (h4Bull or not h4Bear) and buyQuality495) or breakoutRetestBuy) and not chaseBuy
+
+lsbScalp = confirmed and not smartBlockBuy and lsb and not chaseBuy and (m15HookUp or m15BullReject or m15K > m15D)
+lssScalp = confirmed and not smartBlockSell and lss and not chaseSell and not blockSellTrendFlip and (m15HookDown or m15BearReject or m15K < m15D)
+
+// Executable signals after leg filter. Default disables scalp legs because V4.9 test showed they reduce total PnL.
+execBuyConfirm  = buyConfirm and enableBuyConfirm
+execSellConfirm = sellConfirm and enableSellConfirm
+execLsbScalp    = lsbScalp and enableLsbScalp
+execLssScalp    = lssScalp and enableLssScalp
+
+noTrade = confirmed and ((chaseSell and h1Bear) or (chaseBuy and h1Bull) or (not watchSell and not watchBuy and not sellConfirm and not buyConfirm and not lsbScalp and not lssScalp))
+
+state = execSellConfirm ? "SELL CONFIRM" : execBuyConfirm ? "BUY CONFIRM" : execLsbScalp ? "LSB SCALP" : execLssScalp ? "LSS SCALP" : watchSell ? "WATCH SELL" : watchBuy ? "WATCH BUY" : noTrade ? "NO TRADE" : "WAIT"
+stateColor = execSellConfirm or execLssScalp or watchSell ? color.red : execBuyConfirm or execLsbScalp or watchBuy ? color.lime : noTrade ? color.gray : color.yellow
+
+//═══════════════════════════════════════
+// SL / TP
+//═══════════════════════════════════════
+slBuyConfirm  = ta.lowest(low, swingLb) - atr * slAtrBuf
+slSellConfirm = ta.highest(high, swingLb) + atr * slAtrBuf
+riskBuyConfirm = math.max(close - slBuyConfirm, syminfo.mintick)
+riskSellConfirm = math.max(slSellConfirm - close, syminfo.mintick)
+riskBuyAllowed = not useRiskBlock or riskBuyConfirm <= maxSlPoints
+riskSellAllowed = not useRiskBlock or riskSellConfirm <= maxSlPoints
+tpBuyConfirm = close + riskBuyConfirm * rrBuyConfirm
+tpSellConfirm = close - riskSellConfirm * rrSellConfirm
+
+slLsb = ta.lowest(low, scalpLb) - atr * scalpSlAtr
+slLss = ta.highest(high, scalpLb) + atr * scalpSlAtr
+riskLsb = math.max(close - slLsb, syminfo.mintick)
+riskLss = math.max(slLss - close, syminfo.mintick)
+tpLsb = close + riskLsb * rrScalp
+tpLss = close - riskLss * rrScalp
+
+canLongConfirm  = (mode == "Confirm Only" or mode == "Confirm + Scalp" or mode == "Buy Only") and enableBuyConfirm
+canShortConfirm = (mode == "Confirm Only" or mode == "Confirm + Scalp" or mode == "Sell Only") and enableSellConfirm
+canScalp = mode == "Confirm + Scalp" or mode == "Scalp Only"
+canLsbScalp = canScalp and enableLsbScalp
+canLssScalp = canScalp and enableLssScalp
+
+//═══════════════════════════════════════
+// STRATEGY ORDERS
+//═══════════════════════════════════════
+if execBuyConfirm and canLongConfirm and riskBuyAllowed and strategy.position_size == 0
+    strategy.entry("BUY CONFIRM", strategy.long)
+    strategy.exit("BUY EXIT", "BUY CONFIRM", stop=slBuyConfirm, limit=tpBuyConfirm)
+
+if execSellConfirm and canShortConfirm and riskSellAllowed and strategy.position_size == 0
+    strategy.entry("SELL CONFIRM", strategy.short)
+    strategy.exit("SELL EXIT", "SELL CONFIRM", stop=slSellConfirm, limit=tpSellConfirm)
+
+if execLsbScalp and canLsbScalp and strategy.position_size == 0
+    strategy.entry("LSB SCALP", strategy.long)
+    strategy.exit("LSB EXIT", "LSB SCALP", stop=slLsb, limit=tpLsb)
+
+if execLssScalp and canLssScalp and strategy.position_size == 0
+    strategy.entry("LSS SCALP", strategy.short)
+    strategy.exit("LSS EXIT", "LSS SCALP", stop=slLss, limit=tpLss)
+
+//═══════════════════════════════════════
+// DISPLAY
+//═══════════════════════════════════════
+plot(ema20,  "EMA20",  color=color.yellow, linewidth=1)
+plot(ema50,  "EMA50",  color=color.orange, linewidth=2)
+plot(ema200, "EMA200", color=color.white, linewidth=2)
+plot(showFib ? fib618 : na, "Fib 0.618", color=color.new(color.orange, 35), linewidth=1)
+plot(showFib ? fib786 : na, "Fib 0.786", color=color.new(color.red, 45), linewidth=1)
+
+plotshape(showSignals and execBuyConfirm,  title="BUY CONFIRM",  text="BUY",  style=shape.triangleup,   location=location.belowbar, color=color.lime, textcolor=color.white, size=size.normal)
+plotshape(showSignals and execSellConfirm, title="SELL CONFIRM", text="SELL", style=shape.triangledown, location=location.abovebar, color=color.red,  textcolor=color.white, size=size.normal)
+plotshape(showSignals and execLsbScalp,    title="LSB SCALP",    text="LSB",  style=shape.diamond,      location=location.belowbar, color=color.aqua, textcolor=color.white, size=size.tiny)
+plotshape(showSignals and execLssScalp,    title="LSS SCALP",    text="LSS",  style=shape.diamond,      location=location.abovebar, color=color.fuchsia, textcolor=color.white, size=size.tiny)
+plotshape(showWatch and watchBuy and not execBuyConfirm and not execLsbScalp,   title="WATCH BUY",  text="BUY?",  style=shape.circle, location=location.belowbar, color=color.new(color.lime, 45), textcolor=color.white, size=size.tiny)
+plotshape(showWatch and watchSell and not execSellConfirm and not execLssScalp, title="WATCH SELL", text="SELL?", style=shape.circle, location=location.abovebar, color=color.new(color.red, 45), textcolor=color.white, size=size.tiny)
+plotshape(showWatch and execBuyConfirm and canLongConfirm and not riskBuyAllowed, title="BUY BLOCKED RISK", text="B-RISK", style=shape.xcross, location=location.belowbar, color=color.new(color.gray, 10), textcolor=color.white, size=size.tiny)
+plotshape(showWatch and execSellConfirm and canShortConfirm and not riskSellAllowed, title="SELL BLOCKED RISK", text="S-RISK", style=shape.xcross, location=location.abovebar, color=color.new(color.gray, 10), textcolor=color.white, size=size.tiny)
+plotshape(showWatch and blockSellTrendFlip, title="SELL BLOCKED TREND FLIP", text="NO SELL", style=shape.xcross, location=location.abovebar, color=color.new(color.orange, 5), textcolor=color.white, size=size.tiny)
+plotshape(showWatch and breakoutRetestBuy and not execBuyConfirm, title="BREAKOUT RETEST BUY WATCH", text="BR BUY?", style=shape.circle, location=location.belowbar, color=color.new(color.lime, 20), textcolor=color.white, size=size.tiny)
+plotshape(showDisabledLegs and lsbScalp and not enableLsbScalp, title="DISABLED LSB", text="xLSB", style=shape.xcross, location=location.belowbar, color=color.new(color.aqua, 20), textcolor=color.white, size=size.tiny)
+plotshape(showDisabledLegs and lssScalp and not enableLssScalp, title="DISABLED LSS", text="xLSS", style=shape.xcross, location=location.abovebar, color=color.new(color.fuchsia, 20), textcolor=color.white, size=size.tiny)
+
+var table dash = table.new(position.top_right, 2, 11, bgcolor=color.new(color.black, 15), border_width=1)
+if showDash and barstate.islast
+    table.cell(dash, 0, 0, "XAU V4.10.1", text_color=color.white, bgcolor=color.navy, text_size=size.small)
+    table.cell(dash, 1, 0, state, text_color=stateColor, bgcolor=color.navy, text_size=size.small)
+    table.cell(dash, 0, 1, "Trend", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 1, (h1Bear ? "H1 Bear" : h1Bull ? "H1 Bull" : "H1 Mid") + " | " + (h4Bear ? "H4 Bear" : h4Bull ? "H4 Bull" : "H4 Wait"), text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 2, "M15", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 2, "K:" + str.tostring(math.round(m15K,1)) + " D:" + str.tostring(math.round(m15D,1)), text_color=m15K > m15D ? color.lime : color.red, text_size=size.small)
+    table.cell(dash, 0, 3, "Zone", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 3, nearSellZone ? "Sell Zone" : nearBuyZone ? "Buy Zone" : "Middle", text_color=nearSellZone ? color.red : nearBuyZone ? color.lime : color.gray, text_size=size.small)
+    table.cell(dash, 0, 4, "Filter", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 4, blockSellTrendFlip ? "NO SELL " + sellAdaptMode : chaseSell ? "No Chase Sell" : chaseBuy ? "No Chase Buy" : "OK", text_color=(blockSellTrendFlip or chaseSell or chaseBuy) ? color.gray : color.lime, text_size=size.small)
+    table.cell(dash, 0, 5, "SL/TP", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 5, execSellConfirm ? str.tostring(math.round(slSellConfirm,2)) + "/" + str.tostring(math.round(tpSellConfirm,2)) : execBuyConfirm ? str.tostring(math.round(slBuyConfirm,2)) + "/" + str.tostring(math.round(tpBuyConfirm,2)) : execLsbScalp ? str.tostring(math.round(slLsb,2)) + "/" + str.tostring(math.round(tpLsb,2)) : execLssScalp ? str.tostring(math.round(slLss,2)) + "/" + str.tostring(math.round(tpLss,2)) : "-/-", text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 6, "Risk", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 6, execSellConfirm ? "S:" + str.tostring(math.round(riskSellConfirm,1)) + (riskSellAllowed ? " OK" : " BLOCK") : execBuyConfirm ? "B:" + str.tostring(math.round(riskBuyConfirm,1)) + (riskBuyAllowed ? " OK" : " BLOCK") : "Max:" + str.tostring(maxSlPoints), text_color=(riskBuyAllowed and riskSellAllowed and atrOk) ? color.lime : color.red, text_size=size.small)
+    table.cell(dash, 0, 7, "Legs", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 7, (enableBuyConfirm?"B":"-") + "/" + (enableSellConfirm?"S":"-") + "/" + (enableLsbScalp?"LSB":"-") + "/" + (enableLssScalp?"LSS":"-"), text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 8, "Guard", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 8, dailyLossHit ? "DAILY STOP" : badModeActive ? "BAD MODE" : deepBearBuyBlock ? "NO BUY EMA200" : weeklySoftBuyBlock ? "W-BEAR BUY BLOCK" : strongSellRejectionOverride ? "SELL OVERRIDE" : "OK", text_color=(dailyLossHit or badModeActive or deepBearBuyBlock or weeklySoftBuyBlock) ? color.orange : color.lime, text_size=size.small)
+    table.cell(dash, 0, 9, "PnL Guard", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 9, "D:" + str.tostring(math.round(dailyPnL,1)) + " R:" + str.tostring(math.round(recentPnl,1)) + " L:" + str.tostring(recentLosses), text_color=(dailyLossHit or badModeActive) ? color.red : color.white, text_size=size.small)
+    table.cell(dash, 0, 10, "Mode", text_color=color.white, bgcolor=color.navy, text_size=size.small)
+    table.cell(dash, 1, 10, mode, text_color=color.white, bgcolor=color.navy, text_size=size.small)
+
+//═══════════════════════════════════════
+// ALERTS
+//═══════════════════════════════════════
+alertcondition(watchBuy,     title="WATCH BUY",     message="XAUUSD V4.10.1 WATCH BUY")
+alertcondition(watchSell,    title="WATCH SELL",    message="XAUUSD V4.10.1 WATCH SELL")
+alertcondition(execBuyConfirm,   title="BUY CONFIRM",   message="XAUUSD V4.10.1 BUY CONFIRM")
+alertcondition(execSellConfirm,  title="SELL CONFIRM",  message="XAUUSD V4.10.1 SELL CONFIRM")
+alertcondition(execLsbScalp,     title="LSB SCALP",     message="XAUUSD V4.10.1 LSB SCALP BUY")
+alertcondition(execLssScalp,     title="LSS SCALP",     message="XAUUSD V4.10.1 LSS SCALP SELL")
+alertcondition(blockSellTrendFlip, title="NO SELL TREND FLIP", message="XAUUSD V4.10.1 blocked SELL because price reclaimed bullish structure")
+alertcondition(breakoutRetestBuy, title="BREAKOUT RETEST BUY", message="XAUUSD V4.10.1 breakout retest BUY watch/confirm")
