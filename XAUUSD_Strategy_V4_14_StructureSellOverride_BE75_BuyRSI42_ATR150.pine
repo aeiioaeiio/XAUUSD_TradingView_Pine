@@ -129,11 +129,11 @@ maxLossStreak        = input.int(3, "Max Consecutive Losses", group="V4.11 Quant
 useStrictMtfAlign    = input.bool(true, "Strict H1/H4 Alignment", group="V4.11 Quant Guard")
 
 // V4.11 Profit Guard: softer than old profit-secure. It only starts after trade has already moved well.
-useStepProfitLock    = input.bool(false, "Use Step Profit Lock", group="V4.11 Profit Guard")
-lock1TriggerR        = input.float(0.75, "Lock 1 Trigger R", group="V4.11 Profit Guard", step=0.05)
-lock1KeepR           = input.float(0.20, "Lock 1 Keep R", group="V4.11 Profit Guard", step=0.05)
-lock2TriggerR        = input.float(1.10, "Lock 2 Trigger R", group="V4.11 Profit Guard", step=0.05)
-lock2KeepR           = input.float(0.45, "Lock 2 Keep R", group="V4.11 Profit Guard", step=0.05)
+useStepProfitLock    = input.bool(true, "Use Step Profit Lock", group="V4.11 Profit Guard")
+lock1TriggerR        = input.float(1.00, "Lock 1 Trigger R", group="V4.11 Profit Guard", step=0.05)
+lock1KeepR           = input.float(0.15, "Lock 1 Keep R", group="V4.11 Profit Guard", step=0.05)
+lock2TriggerR        = input.float(1.30, "Lock 2 Trigger R", group="V4.11 Profit Guard", step=0.05)
+lock2KeepR           = input.float(0.35, "Lock 2 Keep R", group="V4.11 Profit Guard", step=0.05)
 
 //═══════════════════════════════════════
 // HELPER FUNCTIONS
