@@ -96,7 +96,7 @@ structureRsiMax          = input.float(67.0, "Structure SELL Max RSI", group="V4
 useLowerHighSell         = input.bool(true, "Require Lower High", group="V4.14 Structure SELL")
 useVolumeSpikeSell       = input.bool(true, "Use Volume Spike Confirm", group="V4.14 Structure SELL")
 volumeSpikeLen           = input.int(20, "Volume Spike MA Length", group="V4.14 Structure SELL", minval=5)
-volumeSpikeMult          = input.float(1.30, "Volume Spike Multiplier", group="V4.14 Structure SELL", step=0.05)
+volumeSpikeMult          = input.float(1.40, "Volume Spike Multiplier", group="V4.14 Structure SELL", step=0.05)
 
 
 // V4.10.4 BE Rescue Only
@@ -109,10 +109,10 @@ beOffsetPts          = input.float(0.0,  "BE Offset Points", group="V4.10.4 BE R
 useMfeRescue         = input.bool(false, "Close When MFE Gives Back (OFF default)", group="V4.10.4 Optional MFE")
 rescueMfeMinPts      = input.float(35.0, "MFE Close Starts after Points", group="V4.10.4 Optional MFE", step=1.0)
 rescueRemainPts      = input.float(3.0,  "Close if Current Profit <= Points", group="V4.10.4 Optional MFE", step=1.0)
-useMfeTrailBuy       = input.bool(false, "Use MFE Trail for BUY", group="V4.10.4 Optional MFE")
-useMfeTrailSell      = input.bool(false, "Use MFE Trail for SELL", group="V4.10.4 Optional MFE")
-trailStartR          = input.float(1.50, "MFE Trail Starts after R", group="V4.10.4 Optional MFE", step=0.05)
-trailKeepPct         = input.float(0.25, "MFE Trail Keep %", group="V4.10.4 Optional MFE", step=0.05, minval=0.05, maxval=0.90)
+useMfeTrailBuy       = input.bool(true, "Use MFE Trail for BUY", group="V4.10.4 Optional MFE")
+useMfeTrailSell      = input.bool(true, "Use MFE Trail for SELL", group="V4.10.4 Optional MFE")
+trailStartR          = input.float(1.00, "MFE Trail Starts after R", group="V4.10.4 Optional MFE", step=0.05)
+trailKeepPct         = input.float(0.20, "MFE Trail Keep %", group="V4.10.4 Optional MFE", step=0.05, minval=0.05, maxval=0.90)
 showRescueStop       = input.bool(true,  "Show Active BE/Rescue Stop", group="V4.10.4 BE Rescue")
 
 // V4.11 Quant Guard Test
