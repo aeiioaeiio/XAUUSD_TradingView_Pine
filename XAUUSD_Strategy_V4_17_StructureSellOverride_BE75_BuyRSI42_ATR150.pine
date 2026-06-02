@@ -1,5 +1,5 @@
 //@version=5
-strategy("XAUUSD Strategy V4.14 - Structure Sell Override BE75 BuyRSI42 ATR150", overlay=true, max_lines_count=500, max_labels_count=500, initial_capital=1000, default_qty_type=strategy.fixed, default_qty_value=1, commission_type=strategy.commission.cash_per_order, commission_value=0)
+strategy("XAUUSD Strategy V4.17 - Structure Sell Override BE75 BuyRSI42 ATR150", overlay=true, max_lines_count=500, max_labels_count=500, initial_capital=1000, default_qty_type=strategy.fixed, default_qty_value=1, commission_type=strategy.commission.cash_per_order, commission_value=0)
 
 //═══════════════════════════════════════
 // SETTINGS
@@ -92,13 +92,13 @@ badCooldownBars         = input.int(24, "Bad Mode Cooldown Bars", group="V4.11 S
 useSoftSessionGuard     = input.bool(false, "Soft London/NY Session Guard", group="V4.11 Smart Guard")
 useSellFlipOverride     = input.bool(true, "Allow Strong SELL Rejection Override", group="V4.11 Smart Guard")
 
-// V4.14 Structure SELL Override
-useStructureSellOverride = input.bool(true, "Use Structure SELL Override", group="V4.14 Structure SELL")
-structureRsiMax          = input.float(67.0, "Structure SELL Max RSI", group="V4.14 Structure SELL", step=0.5)
-useLowerHighSell         = input.bool(true, "Require Lower High", group="V4.14 Structure SELL")
-useVolumeSpikeSell       = input.bool(true, "Use Volume Spike Confirm", group="V4.14 Structure SELL")
-volumeSpikeLen           = input.int(20, "Volume Spike MA Length", group="V4.14 Structure SELL", minval=5)
-volumeSpikeMult          = input.float(1.40, "Volume Spike Multiplier", group="V4.14 Structure SELL", step=0.05)
+// V4.17 Structure SELL Override
+useStructureSellOverride = input.bool(true, "Use Structure SELL Override", group="V4.17 Structure SELL")
+structureRsiMax          = input.float(67.0, "Structure SELL Max RSI", group="V4.17 Structure SELL", step=0.5)
+useLowerHighSell         = input.bool(true, "Require Lower High", group="V4.17 Structure SELL")
+useVolumeSpikeSell       = input.bool(true, "Use Volume Spike Confirm", group="V4.17 Structure SELL")
+volumeSpikeLen           = input.int(20, "Volume Spike MA Length", group="V4.17 Structure SELL", minval=5)
+volumeSpikeMult          = input.float(1.40, "Volume Spike Multiplier", group="V4.17 Structure SELL", step=0.05)
 
 
 // V4.10.4 BE Rescue Only
@@ -222,7 +222,7 @@ m15BuyTrig    = (m15K <= buyOs or m15K[1] <= buyOs) and (m15HookUp or m15BullRej
 lsb = low < ta.lowest(low, 5)[1] and close > low and lowerW / barRng >= 0.45
 lss = high > ta.highest(high, 5)[1] and close < high and upperW / barRng >= 0.45
 
-// V4.14 Market Structure SELL
+// V4.17 Market Structure SELL
 lowerHighSell = high < high[1] and high[1] <= high[2]
 swingBreakSell = close < ta.lowest(low, 3)[1] or close < ema20
 volumeAvgSell = ta.sma(volume, volumeSpikeLen)
@@ -524,7 +524,7 @@ plotshape(showDisabledLegs and lssScalp and not enableLssScalp, title="DISABLED 
 
 var table dash = table.new(position.top_right, 2, 11, bgcolor=color.new(color.black, 15), border_width=1)
 if showDash and barstate.islast
-    table.cell(dash, 0, 0, "XAU V4.14", text_color=color.white, bgcolor=color.navy, text_size=size.small)
+    table.cell(dash, 0, 0, "XAU V4.17", text_color=color.white, bgcolor=color.navy, text_size=size.small)
     table.cell(dash, 1, 0, state, text_color=stateColor, bgcolor=color.navy, text_size=size.small)
     table.cell(dash, 0, 1, "Trend", text_color=color.white, text_size=size.small)
     table.cell(dash, 1, 1, (h1Bear ? "H1 Bear" : h1Bull ? "H1 Bull" : "H1 Mid") + " | " + (h4Bear ? "H4 Bear" : h4Bull ? "H4 Bull" : "H4 Wait"), text_color=color.white, text_size=size.small)
@@ -550,12 +550,12 @@ if showDash and barstate.islast
 //═══════════════════════════════════════
 // ALERTS
 //═══════════════════════════════════════
-alertcondition(watchBuy,     title="WATCH BUY",     message="XAUUSD V4.14 WATCH BUY")
-alertcondition(watchSell,    title="WATCH SELL",    message="XAUUSD V4.14 WATCH SELL")
-alertcondition(execBuyConfirm,   title="BUY CONFIRM",   message="XAUUSD V4.14 BUY CONFIRM")
-alertcondition(execSellConfirm,  title="SELL CONFIRM",  message="XAUUSD V4.14 SELL CONFIRM")
-alertcondition(execLsbScalp,     title="LSB SCALP",     message="XAUUSD V4.14 LSB SCALP BUY")
-alertcondition(execLssScalp,     title="LSS SCALP",     message="XAUUSD V4.14 LSS SCALP SELL")
-alertcondition(oppositeSignalConflict, title="OPPOSITE SIGNAL CONFLICT", message="XAUUSD V4.14 blocked entry because BUY and SELL signals fired on the same bar")
-alertcondition(blockSellTrendFlip, title="NO SELL TREND FLIP", message="XAUUSD V4.14 blocked SELL because price reclaimed bullish structure")
-alertcondition(breakoutRetestBuy, title="BREAKOUT RETEST BUY", message="XAUUSD V4.14 breakout retest BUY watch/confirm")
+alertcondition(watchBuy,     title="WATCH BUY",     message="XAUUSD V4.17 WATCH BUY")
+alertcondition(watchSell,    title="WATCH SELL",    message="XAUUSD V4.17 WATCH SELL")
+alertcondition(execBuyConfirm,   title="BUY CONFIRM",   message="XAUUSD V4.17 BUY CONFIRM")
+alertcondition(execSellConfirm,  title="SELL CONFIRM",  message="XAUUSD V4.17 SELL CONFIRM")
+alertcondition(execLsbScalp,     title="LSB SCALP",     message="XAUUSD V4.17 LSB SCALP BUY")
+alertcondition(execLssScalp,     title="LSS SCALP",     message="XAUUSD V4.17 LSS SCALP SELL")
+alertcondition(oppositeSignalConflict, title="OPPOSITE SIGNAL CONFLICT", message="XAUUSD V4.17 blocked entry because BUY and SELL signals fired on the same bar")
+alertcondition(blockSellTrendFlip, title="NO SELL TREND FLIP", message="XAUUSD V4.17 blocked SELL because price reclaimed bullish structure")
+alertcondition(breakoutRetestBuy, title="BREAKOUT RETEST BUY", message="XAUUSD V4.17 breakout retest BUY watch/confirm")
