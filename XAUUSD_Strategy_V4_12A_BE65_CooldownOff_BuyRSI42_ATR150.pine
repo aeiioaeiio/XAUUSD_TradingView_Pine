@@ -95,7 +95,7 @@ useSellFlipOverride     = input.bool(true, "Allow Strong SELL Rejection Override
 // Default uses BE only; MFE close/trail are optional and OFF by default.
 useProfitRescue      = input.bool(true,  "Use BE Rescue for Confirm Trades", group="V4.10.4 BE Rescue")
 useBEAtR             = input.bool(true,  "Move SL to BE after R", group="V4.10.4 BE Rescue")
-beTriggerR           = input.float(0.65, "BE Trigger R", group="V4.10.4 BE Rescue", step=0.05)
+beTriggerR           = input.float(0.75, "BE Trigger R", group="V4.10.4 BE Rescue", step=0.05)
 beOffsetPts          = input.float(0.0,  "BE Offset Points", group="V4.10.4 BE Rescue", step=0.1)
 useMfeRescue         = input.bool(false, "Close When MFE Gives Back (OFF default)", group="V4.10.4 Optional MFE")
 rescueMfeMinPts      = input.float(35.0, "MFE Close Starts after Points", group="V4.10.4 Optional MFE", step=1.0)
