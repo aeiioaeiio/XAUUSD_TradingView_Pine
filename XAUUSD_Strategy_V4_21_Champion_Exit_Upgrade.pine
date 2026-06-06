@@ -136,9 +136,9 @@ lock2TriggerR        = input.float(1.30, "Lock 2 Trigger R", group="V4.11 Profit
 lock2KeepR           = input.float(0.35, "Lock 2 Keep R", group="V4.11 Profit Guard", step=0.05)
 
 // V4.20 Champion Safety Upgrade
-useV420MomentumExpansion = input.bool(true, "Use RSI Momentum Expansion", group="V4.20 Champion Upgrade")
+useV420MomentumExpansion = input.bool(false, "Use RSI Momentum Expansion", group="V4.20 Champion Upgrade")
 momentumBars             = input.int(2, "Momentum Rising/Falling Bars", group="V4.20 Champion Upgrade", minval=1, maxval=5)
-useV420PullbackDepth     = input.bool(true, "Use Pullback Depth Filter", group="V4.20 Champion Upgrade")
+useV420PullbackDepth     = input.bool(false, "Use Pullback Depth Filter", group="V4.20 Champion Upgrade")
 pullbackAtrTol           = input.float(0.25, "Pullback Touch Tolerance x ATR", group="V4.20 Champion Upgrade", step=0.05)
 useV420Ema200Bias        = input.bool(true, "Use EMA200 Bias Guard", group="V4.20 Champion Upgrade")
 ema200BiasMode           = input.string("Soft", "EMA200 Bias Mode", options=["Off", "Soft", "Strict"], group="V4.20 Champion Upgrade")
@@ -155,7 +155,7 @@ extremeStochBuy          = input.float(15.0, "Extreme BUY Stoch <=", group="V4.2
 extremeAtrMult           = input.float(1.80, "Extreme Candle x ATR Avg", group="V4.20 Extreme Reversal", step=0.05)
 
 // V4.21 Exit Upgrade - keep Champion entry core, improve profit capture only
-useV421RunnerTP        = input.bool(false, "Use Strong Trend Runner TP", group="V4.21 Exit Upgrade")
+useV421RunnerTP        = input.bool(true, "Use Strong Trend Runner TP", group="V4.21 Exit Upgrade")
 runnerBuyRr            = input.float(2.00, "BUY Runner TP RR", group="V4.21 Exit Upgrade", step=0.1)
 runnerSellRr           = input.float(2.10, "SELL Runner TP RR", group="V4.21 Exit Upgrade", step=0.1)
 useSafePyramiding      = input.bool(false, "Use Safe Pyramiding", group="V4.21 Safe Pyramiding")
